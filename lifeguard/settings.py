@@ -50,6 +50,7 @@ OCCUPANCY_RETENTION_DAYS = 30
 FOOTAGE_FOLDER_PREFIX = "AlertSaved-"
 FOOTAGE_FOLDER_DATE_FORMAT = "%m-%d-%y"        # AlertSaved-10-10-26 (month-day-year); "%d-%m-%y" = day first
 DEFAULT_FOOTAGE_RETENTION_DAYS = 14     # daily folders older than this are deleted automatically
+LOGIN_LOG_RETENTION_DAYS = 30           # retention days for prune_old_records
 PRE_ROLL_SEC = 10
 POST_ROLL_SEC = 10
 
@@ -113,3 +114,11 @@ def load_secret_key():
 def is_cloud():
     """Returns True if running in a cloud environment like Render."""
     return os.environ.get("RENDER") is not None or os.environ.get("LIFEGUARD_CLOUD") == "1"
+
+
+def cloud_settings():
+    """Returns remote server connection configuration for uplink."""
+    url = load_config().get("remote_url", REMOTE_URL)
+    if url:
+        return {"url": url}
+    return None
