@@ -100,3 +100,8 @@ def load_secret_key():
     if not SECRET_KEY_FILE.exists():
         SECRET_KEY_FILE.write_bytes(os.urandom(32))
     return SECRET_KEY_FILE.read_bytes()
+
+
+def is_cloud():
+    """Returns True if running in a cloud environment like Render."""
+    return os.environ.get("RENDER") is not None or os.environ.get("LIFEGUARD_CLOUD") == "1"
