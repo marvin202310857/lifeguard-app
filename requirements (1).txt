@@ -1,7 +1,0 @@
-flask>=3.1
-werkzeug>=3.0
-requests>=2.31
-numpy>=1.26
-opencv-python>=4.8       # use opencv-python-headless on a server with no display (calibration needs the GUI build)
-ultralytics>=8.2         # YOLOv8 person detection + ByteTrack
-waitress>=3.0
