@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "_components.html" import brand, field, password_field with context %}
+
+{% block title %}LifeGuard - Log in{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('css/login.css') }}">{% endblock %}
+{% block body_class %}login-page{% endblock %}
+
+{% block body %}
+<aside class="login-hero">
+  {{ brand("lg") }}
+  <div class="login-rope" aria-hidden="true"></div>
+  <div class="login-hero-copy">
+    <h2>Smart detection. Faster response. Safer swimming.</h2>
+    <p>Live pool monitoring that flags swimmers who stay in the water too long, so staff can step in early.</p>
+  </div>
+</aside>
+
+<main class="login-main">
+  <div class="login-card">
+    <div class="login-mobile-brand">{{ brand("lg") }}</div>
+    <h1>Welcome back</h1>
+    <p class="lede">Log in to watch the pool, or request an account.</p>
+
+    <div class="tabs" role="tablist" aria-label="Account">
+      <button class="tab" role="tab" id="tab-login" aria-selected="true" aria-controls="panel-login">Log in</button>
+      <button class="tab" role="tab" id="tab-register" aria-selected="false" aria-controls="panel-register" tabindex="-1">Create account</button>
+    </div>
+
+    <form id="panel-login" role="tabpanel" aria-labelledby="tab-login" novalidate>
+      {{ field("login-username", "Username", placeholder="Your username", autocomplete="username") }}
+      {{ password_field("login-password", "Password", placeholder="Your password") }}
+      <button class="btn btn-primary btn-block" type="submit">Log in</button>
+    </form>
+
+    <form id="panel-register" role="tabpanel" aria-labelledby="tab-register" hidden novalidate>
+      {{ field("register-username", "Username", placeholder="3-30 letters, numbers, . _ -") }}
+      {{ password_field("register-password", "Password", placeholder="At least 8 characters", autocomplete="new-password") }}
+      <div class="field">
+        <label for="register-role">Role</label>
+        <select id="register-role" name="role">
+          <option value="User">Lifeguard / staff</option>
+          <option value="Administrator">Administrator</option>
+        </select>
+        <p class="field-hint">An administrator must approve your account before you can log in.</p>
+      </div>
+      <button class="btn btn-primary btn-block" type="submit">Request account</button>
+    </form>
+
+    <div id="message" class="message" hidden></div>
+  </div>
+</main>
+{% endblock %}
+
+{% block scripts %}<script src="{{ asset('js/login.js') }}"></script>{% endblock %}

@@ -1,0 +1,113 @@
+/* Dashboard */
+
+.topbar { background: var(--surface); border-bottom: 0.0625rem solid var(--line); }
+.topbar-inner {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem 1rem;
+  max-width: 80rem; margin: 0 auto; padding: 0.75rem 1.5rem;
+}
+.userbar { display: flex; align-items: center; flex-wrap: wrap; gap: 0.625rem; }
+.userbar form { margin: 0; }
+.user-name { font-weight: 650; color: var(--ink-2); }
+
+.page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; max-width: 80rem; margin: 0 auto; padding: 1.5rem; }
+
+/* ---- status panel: the one thing that must read from across the pool deck ---- */
+.status {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1.25rem 2.5rem;
+  padding: 1.75rem 2rem; border-radius: var(--radius-l); color: #fff; background: var(--offline);
+  transition: background-color .3s;
+}
+.status-safe    { background: var(--safe); }
+.status-warn    { background: var(--warn); }
+.status-danger  { background: var(--danger); animation: alarm 1.4s ease-in-out infinite; }
+.status-offline { background: var(--offline); }
+@keyframes alarm { 50% { box-shadow: 0 0 0 0.75rem rgb(200 30 30 / .28); } }
+
+.status h1 { font-size: clamp(1.875rem, 4.5vw, 2.875rem); line-height: 1.1; font-weight: 800; letter-spacing: -0.025em; }
+.status-text p { margin-top: 0.5rem; max-width: 56ch; font-size: 1.0625rem; }
+.counters { display: flex; gap: 0.75rem 2.25rem; margin: 0; }
+.counter { display: flex; flex-direction: column-reverse; align-items: flex-start; }
+.counter dt { font-size: 0.875rem; }
+.counter dd { margin: 0; font-size: 2.75rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+
+/* ---- cameras ---------------------------------------------------------------- */
+.cameras { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 28.75rem), 1fr)); gap: 1.25rem; }
+.cam { overflow: hidden; background: var(--surface); border: 0.0625rem solid var(--line); border-radius: 0.75rem; }
+.cam-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 1rem; border-bottom: 0.0625rem solid var(--line); }
+.cam-head h2 { font-size: 1rem; font-weight: 700; }
+.cam-view { aspect-ratio: 4 / 3; background: #08111f; }
+.cam-view img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.cam-foot { display: flex; flex-wrap: wrap; gap: 0.375rem 1.25rem; padding: 0.625rem 1rem; font-size: 0.8125rem; color: var(--ink-2); }
+.cam-foot strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.cam-updated { margin-left: auto; color: var(--ink-3); }
+
+/* ---- security alerts -------------------------------------------------------- */
+.sec-alerts { display: grid; gap: 0.5rem; }
+.sec-alert {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 0.75rem 1rem; border: 0.0625rem solid #f4b8b8; border-radius: 0.625rem;
+  background: var(--danger-tint); color: #7f1414;
+}
+.sec-alert small { display: block; font-weight: 400; color: var(--danger); }
+
+/* ---- administration --------------------------------------------------------- */
+.admin { background: var(--surface); border: 0.0625rem solid var(--line); border-radius: 0.75rem; }
+.admin > .tabs { padding: 0 0.75rem; overflow-x: auto; scrollbar-width: thin; }   /* tabs scroll on narrow screens */
+.tab-panel { padding: 1.25rem; }
+.empty { padding: 2rem 1rem; text-align: center; color: var(--ink-3); }
+
+.incident-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 1rem; }
+.incident-grid > .empty, .folder-grid > .empty { grid-column: 1 / -1; }
+.incident { display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 0.0625rem solid var(--line); border-radius: 0.75rem; }
+.incident-thumb { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #08111f; }
+.incident-thumb-empty { display: grid; place-items: center; aspect-ratio: 4 / 3; background: #08111f; color: #9fb0c6; font-size: 0.8125rem; }
+.incident-body { display: grid; gap: 0.25rem; padding: 0.75rem 0.875rem; font-size: 0.8125rem; color: var(--ink-2); }
+.incident-body strong { font-size: 0.9375rem; color: var(--ink); }
+.incident-meta { display: flex; flex-wrap: wrap; gap: 0.375rem; align-items: center; margin-bottom: 0.125rem; }
+.incident-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: auto; padding: 0 0.875rem 0.875rem; }
+
+/* ---- footage folders ---------------------------------------------------------- */
+.footage-head { display: grid; gap: 0.25rem; margin-bottom: 1rem; }
+.crumbs { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; }
+.crumb { padding: 0; background: none; border: 0; font: inherit; color: var(--brand-dark); cursor: pointer; }
+.crumb:disabled { color: var(--ink); cursor: default; }
+.crumbs span::before { content: "/"; margin-right: 0.5rem; color: var(--ink-3); font-weight: 400; }
+.folder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16.875rem, 1fr)); gap: 0.875rem; }
+.folder {
+  display: flex; align-items: flex-start; gap: 0.875rem; width: 100%; padding: 1rem; text-align: left;
+  background: var(--surface); border: 0.0625rem solid var(--line); border-radius: 0.75rem; cursor: pointer;
+  transition: border-color .15s, box-shadow .15s;
+}
+.folder:hover { border-color: var(--brand); box-shadow: 0 0.25rem 0.875rem rgb(15 27 45 / .08); }
+.folder-icon { flex: none; width: 2.75rem; height: 2.75rem; color: var(--brand); }
+.folder-text { display: grid; gap: 0.125rem; font-size: 0.8125rem; color: var(--ink-2); }
+.folder-text strong { font-size: 0.9375rem; color: var(--ink); }
+.folder-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-top: 0.5rem; }
+
+.table-wrap { max-height: 27.5rem; overflow: auto; border: 0.0625rem solid var(--line); border-radius: 0.625rem; }
+table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+th {
+  position: sticky; top: 0; padding: 0.625rem 0.875rem; text-align: left;
+  background: var(--paper); border-bottom: 0.0625rem solid var(--line);
+  font-size: 0.8125rem; font-weight: 700; color: var(--ink-2); white-space: nowrap;
+}
+td { padding: 0.625rem 0.875rem; border-bottom: 0.0625rem solid var(--line); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+.cell-chips, .row-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.muted { color: var(--ink-3); }
+
+/* ---- video dialog ------------------------------------------------------------ */
+.video-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.75rem; }
+.video-actions { display: flex; gap: 0.5rem; }
+#video-player { display: block; width: 100%; max-height: 70vh; background: #000; border-radius: 0.5rem; }
+
+/* ---- footer ------------------------------------------------------------------- */
+.site-footer { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 0.5rem 0 1.5rem; font-size: 0.8125rem; color: var(--ink-3); }
+.team-logo { display: block; height: 4.5rem; width: auto; mix-blend-mode: multiply; }  /* multiply hides a white PNG background */
+
+@media (max-width: 640px) {
+  .topbar-inner, .page { padding-left: 1rem; padding-right: 1rem; }
+  .status { padding: 1.375rem 1.25rem; }
+  .counter dd { font-size: 2.25rem; }
+  .tab-panel { padding: 0.875rem; }
+}

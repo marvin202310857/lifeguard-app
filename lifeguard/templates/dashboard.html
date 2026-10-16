@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% from "_components.html" import brand with context %}
+
+{% block title %}LifeGuard - Dashboard{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ asset('css/dashboard.css') }}">{% endblock %}
+{% block body_attrs %} data-user="{{ user.username }}" data-admin="{{ 'true' if is_admin else 'false' }}"{% endblock %}
+
+{% block body %}
+<header class="topbar">
+  <div class="topbar-inner">
+    {{ brand() }}
+    <div class="userbar">
+      <button type="button" id="sound-toggle" class="btn btn-ghost btn-sm" aria-pressed="false">Alarm sound off</button>
+      <span class="user-name">{{ user.username }}</span>
+      <span class="chip {{ 'chip-admin' if is_admin else 'chip-offline' }}">{{ user.role }}</span>
+      <form method="post" action="/logout"><button type="submit" class="btn btn-ghost btn-sm">Log out</button></form>
+    </div>
+  </div>
+</header>
+
+<main class="page">
+  <section id="status-panel" class="status status-offline" role="status" aria-live="polite" aria-atomic="true">
+    <div class="status-text">
+      <h1 id="status-headline">Connecting</h1>
+      <p id="status-detail">Waiting for the cameras to respond.</p>
+    </div>
+    <dl class="counters">
+      <div class="counter"><dt>In the pool</dt><dd id="count-pool">0</dd></div>
+      <div class="counter"><dt>Poolside</dt><dd id="count-side">0</dd></div>
+      <div class="counter"><dt>Cameras online</dt><dd id="count-cams">0</dd></div>
+    </dl>
+  </section>
+
+  <section class="cameras" aria-label="Live cameras">
+    {% for cam in cameras %}
+    <article class="cam" data-cam="{{ cam.id }}" data-name="{{ cam.name }}">
+      <header class="cam-head">
+        <h2>{{ cam.name }}</h2>
+        <span class="chip chip-offline" data-role="chip">Offline</span>
+      </header>
+      <div class="cam-view"><img src="/{{ cam.id }}_feed" alt="Live view from {{ cam.name }}"></div>
+      <footer class="cam-foot">
+        <span>In pool <strong data-role="in">0</strong></span>
+        <span>Poolside <strong data-role="out">0</strong></span>
+        <span class="cam-updated" data-role="updated">No data yet</span>
+      </footer>
+    </article>
+    {% endfor %}
+  </section>
+
+  {% if is_admin %}
+  <section id="security-alerts" class="sec-alerts" aria-label="Security alerts" hidden></section>
+
+  <section class="admin" aria-label="Administration">
+    <div class="tabs" role="tablist" aria-label="Administration">
+      <button class="tab" role="tab" id="tab-incidents" aria-selected="true" aria-controls="panel-incidents">Incidents <span class="count" id="count-incidents" hidden></span></button>
+      <button class="tab" role="tab" id="tab-footage" aria-selected="false" aria-controls="panel-footage" tabindex="-1">Footage</button>
+      <button class="tab" role="tab" id="tab-accounts" aria-selected="false" aria-controls="panel-accounts" tabindex="-1">Accounts <span class="count count-alert" id="count-pending" hidden></span></button>
+      <button class="tab" role="tab" id="tab-logs" aria-selected="false" aria-controls="panel-logs" tabindex="-1">Activity log</button>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" id="panel-incidents" aria-labelledby="tab-incidents">
+      <div id="incident-grid" class="incident-grid"><p class="empty">Loading incidents...</p></div>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" id="panel-footage" aria-labelledby="tab-footage" hidden>
+      <div class="footage-head">
+        <nav class="crumbs" aria-label="Footage location">
+          <button type="button" class="crumb" id="crumb-root" data-action="close-day" disabled>Footage</button>
+          <span id="crumb-day" hidden></span>
+        </nav>
+        <p class="muted" id="footage-summary">Loading storage details...</p>
+      </div>
+      <div id="footage-folders" class="folder-grid"><p class="empty">Loading footage...</p></div>
+      <div id="footage-clips" class="incident-grid" hidden></div>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" id="panel-accounts" aria-labelledby="tab-accounts" hidden>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Username</th><th>Role</th><th>Requested</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody id="user-rows"><tr><td colspan="5" class="empty">Loading accounts...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" id="panel-logs" aria-labelledby="tab-logs" hidden>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>User</th><th>Event</th><th>IP address</th><th>Details</th></tr></thead>
+          <tbody id="log-rows"><tr><td colspan="5" class="empty">Loading activity...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <dialog id="video-dialog" aria-labelledby="video-title">
+    <div class="dialog-body">
+      <div class="video-head">
+        <h2 class="dialog-title" id="video-title">Incident video</h2>
+        <div class="video-actions">
+          <a id="video-download" class="btn btn-info btn-sm" href="#">Download</a>
+          <button type="button" class="btn btn-ghost btn-sm" data-action="close-video">Close</button>
+        </div>
+      </div>
+      <video id="video-player" controls playsinline></video>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-text">
+    <form method="dialog" class="dialog-body">
+      <p class="dialog-title" id="confirm-text"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" value="cancel">Cancel</button>
+        <button class="btn btn-danger" value="ok" id="confirm-ok">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+  {% endif %}
+
+  <footer class="site-footer">
+    <img class="team-logo" src="{{ asset('team-logo.png') }}" width="480" height="456" alt="AquaSentrix logo">
+    <p>&copy; AquaSentricx 2026</p>
+  </footer>
+</main>
+{% endblock %}
+
+{% block scripts %}<script src="{{ asset('js/dashboard.js') }}"></script>{% endblock %}

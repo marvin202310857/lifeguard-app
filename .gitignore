@@ -1,0 +1,11 @@
+# local data - never commit
+lifeguard.db
+lifeguard.db-shm
+lifeguard.db-wal
+secret.key
+pool_events.log
+config.json
+*.pt
+__pycache__/
+*.pyc
+.venv/

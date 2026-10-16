@@ -1,0 +1,36 @@
+# Render Blueprint: one click creates the cloud copy of LifeGuard.
+# The cameras and the AI stay on the pool computer, which uploads to this server.
+services:
+  - type: web
+    name: lifeguard
+    runtime: python
+    region: singapore            # closest Render region to the Philippines
+    plan: starter                # a persistent disk needs a paid plan; the free plan forgets all data
+    buildCommand: pip install -r requirements-cloud.txt
+    startCommand: python -m waitress --host=0.0.0.0 --port=$PORT --threads=48 --call lifeguard.app:create_app
+    healthCheckPath: /healthz
+    disk:
+      name: lifeguard-data
+      mountPath: /data           # the database and the AlertSaved-... footage folders live here
+      sizeGB: 5
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: LIFEGUARD_MODE
+        value: cloud
+      - key: LIFEGUARD_DB
+        value: /data/lifeguard.db
+      - key: LIFEGUARD_FOOTAGE_DIR
+        value: /data/footage
+      - key: LIFEGUARD_PROXY       # Render's load balancer sits in front of the app
+        value: "1"
+      - key: LIFEGUARD_PROXY_TRUST
+        value: private
+      - key: TZ                    # so dates and folder names use Philippine time
+        value: Asia/Manila
+      - key: LIFEGUARD_SECRET_KEY  # signs login cookies (generated once by Render)
+        generateValue: true
+      - key: LIFEGUARD_INGEST_KEY  # the pool computer needs a copy of this (see README)
+        generateValue: true
+      - key: LIFEGUARD_ADMIN_PASSWORD
+        sync: false                # Render asks you for it when you create the service
