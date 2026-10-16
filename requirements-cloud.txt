@@ -1,6 +1,8 @@
-# Render (cloud server): web + database only. No camera or AI libraries are needed here.
 flask>=3.1
 werkzeug>=3.0
 waitress>=3.0
 opencv-python-headless
 requests
+ultralytics
+numpy
+pillow
