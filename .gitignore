@@ -5,6 +5,8 @@ lifeguard.db-wal
 secret.key
 pool_events.log
 config.json
+footage/
+logs/
 *.pt
 __pycache__/
 *.pyc
