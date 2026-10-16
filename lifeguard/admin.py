@@ -41,7 +41,7 @@ def unlock_user():
     username = str(json_body().get("username", "")).strip()
     if not username:
         return fail("Missing username.", 400)
-    db.clear_account_throttle(username)
+    db.reset_throttle(username)
     db.log_event(username, "ACCOUNT_UNLOCKED", True, client_ip(), request.user_agent.string,
                  f"Unlocked by {current_user()['username']}")
     return jsonify({"success": True})

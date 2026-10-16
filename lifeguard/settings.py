@@ -7,7 +7,6 @@ next to run.py, so existing installs keep working unchanged.
 import json
 import logging
 import os
-import socket
 import threading
 from pathlib import Path
 
@@ -43,7 +42,6 @@ DEFAULT_WARN_SEC = 30
 DEFAULT_DANGER_SEC = 60
 DEFAULT_OCCUPANCY_INTERVAL_SEC = 5
 OCCUPANCY_RETENTION_DAYS = 30
-LOGIN_LOG_RETENTION_DAYS = 90            # login activity, resolved security alerts
 
 # --- incident footage -----------------------------------------------------
 FOOTAGE_FOLDER_PREFIX = "AlertSaved-"
@@ -53,11 +51,8 @@ PRE_ROLL_SEC = 10
 POST_ROLL_SEC = 10
 
 # --- accounts / sessions --------------------------------------------------
-MAX_FAILED_ATTEMPTS = 5                    # per account AND per visitor address
+MAX_FAILED_ATTEMPTS = 5
 LOCK_SECONDS = 3 * 60 * 60
-FAILURE_WINDOW_SECONDS = 30 * 60           # failed attempts older than this are forgotten
-IP_MAX_FAILED_ATTEMPTS = 20                # failed logins from one address (any usernames) ...
-IP_LOCK_SECONDS = 15 * 60                  # ... block that address for 15 minutes
 SESSION_LIFETIME_SEC = 12 * 60 * 60
 USERNAME_PATTERN = r"^[A-Za-z0-9._-]{3,30}$"
 MIN_PASSWORD_LENGTH = 8
@@ -99,28 +94,8 @@ def set_config_value(key, value):
         _cache["mtime"] = None
 
 
-def is_cloud():
-    """True on the cloud server (Render): no cameras, fed by the pool computer instead."""
-    return os.environ.get("LIFEGUARD_MODE", "").lower() == "cloud"
-
-
-def cloud_settings():
-    """Where the pool computer sends its data, from the environment or config.json's "cloud" block:
-    {"url": "https://...onrender.com", "key": "...", "site": "pool-1"}. None when not configured."""
-    block = load_config().get("cloud") or {}
-    url = os.environ.get("LIFEGUARD_CLOUD_URL") or block.get("url") or ""
-    key = os.environ.get("LIFEGUARD_CLOUD_KEY") or block.get("key") or ""
-    if not url or not key:
-        return None
-    return {"url": url.rstrip("/"), "key": key, "site": str(block.get("site") or socket.gethostname()),
-            "frame_fps": float(block.get("frame_fps", 2)), "frame_width": int(block.get("frame_width", 400))}
-
-
 def load_secret_key():
-    """Key for signing session cookies: LIFEGUARD_SECRET_KEY if set (cloud), else a saved random file."""
-    from_env = os.environ.get("LIFEGUARD_SECRET_KEY")
-    if from_env:
-        return from_env.encode()
+    """Persistent random key for signing session cookies."""
     if not SECRET_KEY_FILE.exists():
         SECRET_KEY_FILE.write_bytes(os.urandom(32))
     return SECRET_KEY_FILE.read_bytes()
