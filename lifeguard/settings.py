@@ -52,6 +52,7 @@ POST_ROLL_SEC = 10
 
 # --- accounts / sessions --------------------------------------------------
 MAX_FAILED_ATTEMPTS = 5
+FAILURE_WINDOW_SECONDS = 60
 LOCK_SECONDS = 3 * 60 * 60
 SESSION_LIFETIME_SEC = 12 * 60 * 60
 USERNAME_PATTERN = r"^[A-Za-z0-9._-]{3,30}$"
