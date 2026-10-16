@@ -19,6 +19,9 @@ SECRET_KEY_FILE = BASE_DIR / "secret.key"
 EVENT_LOG_FILE = BASE_DIR / "pool_events.log"
 FOOTAGE_DIR = Path(os.environ.get("LIFEGUARD_FOOTAGE_DIR", BASE_DIR / "footage"))
 
+# --- cloud sync / remote uplink -------------------------------------------
+REMOTE_URL = os.environ.get("LIFEGUARD_REMOTE_URL", "https://lifeguard-8t4w.onrender.com")
+
 # Use the local model when present; otherwise ultralytics downloads it by name.
 _local_model = BASE_DIR / "yolov8n.pt"
 MODEL_PATH = str(_local_model if _local_model.exists() else "yolov8n.pt")
