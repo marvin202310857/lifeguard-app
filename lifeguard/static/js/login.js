@@ -1,12 +1,12 @@
-/* Login page: tab switching, login and registration requests. */
+/* Login page: tab switching, password visibility toggle, login and registration requests. */
 (() => {
   'use strict';
   const { request } = window.LG;
   const $ = (id) => document.getElementById(id);
 
   const MIN_PASSWORD = 8;
-  const tabs = { login: $('tab-login'), register: $('tab-register') };
-  const panels = { login: $('panel-login'), register: $('panel-register') };
+  const tabs = { login: $('tab-login'), register:$('tab-register') };
+  const panels = { login: $('panel-login'), register:$('panel-register') };
   const box = $('message');
 
   function showMessage(text, isError) {
@@ -35,6 +35,37 @@
       tabs[next].focus();
     });
   }
+
+  /* Password visibility toggle handler */
+  document.addEventListener('click', (event) => {
+    const toggleBtn = event.target.closest('.toggle-password, [data-toggle-password], .password-toggle');
+    if (!toggleBtn) return;
+
+    const field = toggleBtn.closest('.field, .password-field, .input-group') || toggleBtn.parentElement;
+    const input = field.querySelector('input[type="password"], input[type="text"]');
+    if (!input) return;
+
+    const isHidden = input.type === 'password';
+    input.type = isHidden ? 'text' : 'password';
+
+    // Toggle button active class for CSS icon switching or inline SVG/i updates
+    toggleBtn.classList.toggle('is-visible', isHidden);
+    toggleBtn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
+
+    // Update icon class if standard FontAwesome/Feather icons are used
+    const icon = toggleBtn.querySelector('i, svg');
+    if (icon) {
+      if (isHidden) {
+        // Password revealed -> show closed eye (click to hide)
+        icon.classList.remove('fa-eye', 'icon-eye', 'eye-open');
+        icon.classList.add('fa-eye-slash', 'icon-eye-off', 'eye-closed');
+      } else {
+        // Password masked -> show open eye (click to view)
+        icon.classList.remove('fa-eye-slash', 'icon-eye-off', 'eye-closed');
+        icon.classList.add('fa-eye', 'icon-eye', 'eye-open');
+      }
+    }
+  });
 
   /** Run a submit handler with the button disabled and a friendly network-error fallback. */
   function onSubmit(form, handler) {

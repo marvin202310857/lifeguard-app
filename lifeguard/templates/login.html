@@ -2,11 +2,48 @@
 {% from "_components.html" import brand, field, password_field with context %}
 
 {% block title %}LifeGuard - Log in{% endblock %}
-{% block head %}<link rel="stylesheet" href="{{ asset('css/login.css') }}">{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ asset('css/login.css') }}">
+<style>
+  .login-hero {
+    position: relative;
+    overflow: hidden;
+  }
+  .login-bg-video {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: 0;
+  }
+  .login-hero-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(11, 29, 58, 0.55); /* Dark blue overlay for text readability */
+    z-index: 1;
+  }
+  .login-hero > *:not(.login-bg-video):not(.login-hero-overlay) {
+    position: relative;
+    z-index: 2;
+  }
+</style>
+{% endblock %}
+
 {% block body_class %}login-page{% endblock %}
 
 {% block body %}
 <aside class="login-hero">
+  <video class="login-bg-video" autoplay loop muted playsinline>
+    <source src="{{ asset('PoolVideoBackground.mp4') }}" type="video/mp4">
+  </video>
+  <div class="login-hero-overlay"></div>
+
   {{ brand("lg") }}
   <div class="login-rope" aria-hidden="true"></div>
   <div class="login-hero-copy">
@@ -51,4 +88,6 @@
 </main>
 {% endblock %}
 
-{% block scripts %}<script src="{{ asset('js/login.js') }}"></script>{% endblock %}
+{% block scripts %}
+<script src="{{ asset('js/login.js') }}"></script>
+{% endblock %}
