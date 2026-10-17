@@ -6,25 +6,43 @@
 {% block head %}
 <link rel="stylesheet" href="{{ asset('css/login.css') }}">
 <style>
-  /* Hero sidebar container */
+  /* Force sidebar to full dimensions */
+  aside.login-hero,
   .login-hero {
     position: relative !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 100vh !important;
+    padding: 0 !important;
+    margin: 0 !important;
     overflow: hidden !important;
-    background: transparent !important;
+    background: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
   }
 
-  /* Full-bleed video background covering 100% width and height */
+  /* Target the video tag and force absolute stretch across the entire sidebar */
+  aside.login-hero video,
   .login-bg-video {
     position: absolute !important;
     top: 0 !important;
     left: 0 !important;
     width: 100% !important;
     height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-width: 100% !important;
+    min-height: 100% !important;
     object-fit: cover !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
     z-index: 0 !important;
   }
 
-  /* Dark overlay for contrast and legibility */
+  /* Dark overlay for contrast */
   .login-hero-overlay {
     position: absolute !important;
     top: 0 !important;
@@ -35,10 +53,15 @@
     z-index: 1 !important;
   }
 
-  /* Layer text and elements above the video background */
-  .login-hero > *:not(.login-bg-video):not(.login-hero-overlay) {
+  /* Position text and logo layers above video */
+  aside.login-hero > *:not(.login-bg-video):not(.login-hero-overlay) {
     position: relative !important;
     z-index: 2 !important;
+  }
+
+  .login-hero .brand,
+  .login-hero-copy {
+    padding: 2.5rem !important;
   }
 </style>
 {% endblock %}
