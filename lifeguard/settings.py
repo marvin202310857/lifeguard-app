@@ -7,6 +7,7 @@ next to run.py, so existing installs keep working unchanged.
 import json
 import logging
 import os
+import secrets
 import threading
 from pathlib import Path
 
@@ -69,6 +70,28 @@ MIN_PASSWORD_LENGTH = 8
 VALID_ROLES = ("User", "Administrator")
 
 
+# --- secret key management ------------------------------------------------
+def load_secret_key():
+    """Load or generate persistent secret key for Flask session signing."""
+    secret_key = os.environ.get("FLASK_SECRET_KEY")
+    if secret_key:
+        return secret_key
+
+    if SECRET_KEY_FILE.exists():
+        try:
+            return SECRET_KEY_FILE.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            log.warning("Could not read secret key file %s: %s", SECRET_KEY_FILE.name, exc)
+
+    new_key = secrets.token_hex(32)
+    try:
+        SECRET_KEY_FILE.write_text(new_key, encoding="utf-8")
+    except OSError as exc:
+        log.warning("Could not persist secret key to %s: %s", SECRET_KEY_FILE.name, exc)
+
+    return new_key
+
+
 # --- config.json ----------------------------------------------------------
 _lock = threading.Lock()
 _cache = {"mtime": None, "data": {}}
@@ -97,28 +120,88 @@ def set_config_value(key, value):
             data = json.loads(CONFIG_FILE.read_text("utf-8"))
         except (OSError, ValueError):
             data = {}
+
         data[key] = value
         tmp = CONFIG_FILE.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2), "utf-8")
         os.replace(tmp, CONFIG_FILE)
+
+        # Force load_config() to refresh its cache.
         _cache["mtime"] = None
 
 
-def load_secret_key():
-    """Persistent random key for signing session cookies."""
-    if not SECRET_KEY_FILE.exists():
-        SECRET_KEY_FILE.write_bytes(os.urandom(32))
-    return SECRET_KEY_FILE.read_bytes()
+# --- cloud uplink settings --------------------------------------------------
+def cloud_settings():
+    """Return normalized cloud uplink settings, or None if credentials are absent.
+
+    Keeps the existing config.json format working (including its top-level
+    `remote_url`) and does not rewrite or replace that file. Secrets are best
+    supplied through environment variables rather than committed to JSON.
+    """
+    config = load_config()
+    if not isinstance(config, dict):
+        config = {}
+
+    cloud = config.get("cloud", {})
+    if not isinstance(cloud, dict):
+        cloud = {}
+
+    def first(*values):
+        for value in values:
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return None
+
+    url = first(
+        os.environ.get("LIFEGUARD_CLOUD_URL"),
+        os.environ.get("LIFEGUARD_REMOTE_URL"),
+        cloud.get("url"),
+        config.get("remote_url"),
+        REMOTE_URL,
+    )
+    key = first(
+        os.environ.get("LIFEGUARD_CLOUD_KEY"),
+        os.environ.get("LIFEGUARD_INGEST_KEY"),
+        cloud.get("key"),
+        cloud.get("ingest_key"),
+        config.get("ingest_key"),
+        config.get("remote_key"),
+    )
+    site = first(
+        os.environ.get("LIFEGUARD_SITE"),
+        cloud.get("site"),
+        cloud.get("site_id"),
+        config.get("site"),
+        config.get("site_name"),
+        config.get("site_id"),
+    )
+
+    # URL alone is not enough: the cloud server requires both an ingest key
+    # and a stable site identifier. Return None instead of starting broken threads.
+    if not url or not key or not site:
+        return None
+
+    url = url.rstrip("/")
+    if not url.startswith(("https://", "http://localhost", "http://127.0.0.1")):
+        log.warning("Cloud uplink URL must use HTTPS except for localhost; uplink disabled")
+        return None
+
+    try:
+        frame_width = int(cloud.get("frame_width", 640))
+        frame_fps = float(cloud.get("frame_fps", 2))
+    except (TypeError, ValueError):
+        log.warning("Invalid cloud frame_width/frame_fps; using safe defaults")
+        frame_width, frame_fps = 640, 2.0
+
+    return {
+        "url": url,
+        "key": key,
+        "site": site,
+        "frame_width": max(160, min(frame_width, 1920)),
+        "frame_fps": max(0.5, min(frame_fps, 5.0)),
+    }
 
 
 def is_cloud():
-    """Returns True if running in a cloud environment like Render."""
-    return os.environ.get("RENDER") is not None or os.environ.get("LIFEGUARD_CLOUD") == "1"
-
-
-def cloud_settings():
-    """Returns remote server connection configuration for uplink."""
-    url = load_config().get("remote_url", REMOTE_URL)
-    if url:
-        return {"url": url}
-    return None
+    """Whether this process is running in a cloud deployment."""
+    return bool(os.environ.get("RENDER")) or os.environ.get("LIFEGUARD_CLOUD") == "1"

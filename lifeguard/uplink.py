@@ -8,11 +8,20 @@ While the system runs at the pool, this sends three things to the cloud copy of 
 * all of it survives a dropped connection: alerts wait in a queue stored in the database and are
   delivered in order once the internet is back.
 
-Configure with a "cloud" block in config.json (or LIFEGUARD_CLOUD_URL / LIFEGUARD_CLOUD_KEY):
-    "cloud": {"url": "https://your-app.onrender.com", "key": "<LIFEGUARD_INGEST_KEY from Render>"}
+Configure with a "cloud" block in config.json or environment variables:
+    "cloud": {
+        "url": "https://your-app.onrender.com",
+        "key": "<ingest key>",
+        "site": "<site identifier>",
+        "frame_width": 640,
+        "frame_fps": 2
+    }
+Environment aliases supported: LIFEGUARD_CLOUD_URL / LIFEGUARD_REMOTE_URL,
+LIFEGUARD_CLOUD_KEY / LIFEGUARD_INGEST_KEY, and LIFEGUARD_SITE.
 """
 import json
 import logging
+import os
 import threading
 import time
 
@@ -33,8 +42,90 @@ class UplinkError(Exception):
         self.temporary = temporary
 
 
+def _settings():
+    """Return validated uplink settings, or None when cloud sync is not configured.
+
+    Never start background threads with incomplete credentials. Supports the
+    existing settings helper and the documented config.json/environment aliases.
+    """
+    try:
+        raw = cfg.cloud_settings()
+    except Exception:
+        log.exception("could not load cloud uplink settings")
+        raw = None
+
+    if not isinstance(raw, dict):
+        raw = {}
+
+    # Also read the documented `cloud` block directly, without changing config.
+    try:
+        config = cfg.load_config()
+    except Exception:
+        log.exception("could not load LifeGuard configuration")
+        config = {}
+
+    cloud = config.get("cloud", {}) if isinstance(config, dict) else {}
+    if not isinstance(cloud, dict):
+        cloud = {}
+
+    def first(*values):
+        for value in values:
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return None
+
+    url = first(
+        os.environ.get("LIFEGUARD_CLOUD_URL"),
+        os.environ.get("LIFEGUARD_REMOTE_URL"),
+        cloud.get("url"),
+        raw.get("url"),
+        config.get("remote_url") if isinstance(config, dict) else None,
+    )
+    key = first(
+        os.environ.get("LIFEGUARD_CLOUD_KEY"),
+        os.environ.get("LIFEGUARD_INGEST_KEY"),
+        cloud.get("key"),
+        cloud.get("ingest_key"),
+        raw.get("key"),
+        config.get("ingest_key") if isinstance(config, dict) else None,
+        config.get("remote_key") if isinstance(config, dict) else None,
+    )
+    site = first(
+        os.environ.get("LIFEGUARD_SITE"),
+        cloud.get("site"),
+        cloud.get("site_id"),
+        raw.get("site"),
+        config.get("site") if isinstance(config, dict) else None,
+        config.get("site_name") if isinstance(config, dict) else None,
+        config.get("site_id") if isinstance(config, dict) else None,
+    )
+
+    if not url or not key or not site:
+        return None
+
+    url = url.rstrip("/")
+    if not url.startswith(("https://", "http://localhost", "http://127.0.0.1")):
+        log.warning("cloud uplink URL must use HTTPS except for localhost; uplink disabled")
+        return None
+
+    try:
+        frame_width = int(cloud.get("frame_width", raw.get("frame_width", 640)))
+        frame_fps = float(cloud.get("frame_fps", raw.get("frame_fps", 2)))
+    except (TypeError, ValueError):
+        log.warning("invalid cloud frame_width/frame_fps; using safe defaults")
+        frame_width, frame_fps = 640, 2.0
+
+    return {
+        "url": url,
+        "key": key,
+        "site": site,
+        "frame_width": max(160, min(frame_width, 1920)),
+        "frame_fps": max(0.5, min(frame_fps, 5.0)),
+    }
+
+
 def enabled():
-    return cfg.cloud_settings() is not None
+    return _settings() is not None
 
 
 def enqueue(kind, incident_id):
@@ -63,7 +154,15 @@ def shrink(jpeg, width):
 
 class Uplink:
     def __init__(self, settings=None):
-        self.settings = settings or cfg.cloud_settings()
+        self.settings = settings or _settings()
+        if not isinstance(self.settings, dict):
+            raise ValueError("Cloud uplink is not configured; check URL, key, and site.")
+        required = ("url", "key", "site")
+        missing = [name for name in required if not self.settings.get(name)]
+        if missing:
+            raise ValueError("Cloud uplink settings missing: " + ", ".join(missing))
+        self.settings.setdefault("frame_width", 640)
+        self.settings.setdefault("frame_fps", 2.0)
         self._stop = threading.Event()
         self._wanted = set()
         self._frame_seq = {}
@@ -123,11 +222,16 @@ class Uplink:
                 continue                                   # nothing new since the last upload
             self._frame_seq[cam_id] = seq
             try:
-                session.post(self.url(f"/api/ingest/frame/{cam_id}"),
-                             data=shrink(jpeg, self.settings["frame_width"]),
-                             headers={"Content-Type": "image/jpeg"}, timeout=(5, 10))
+                response = session.post(
+                    self.url(f"/api/ingest/frame/{cam_id}"),
+                    data=shrink(jpeg, self.settings["frame_width"]),
+                    headers={"Content-Type": "image/jpeg"},
+                    timeout=(5, 10),
+                )
+                self._check(response)
                 sent += 1
-            except requests.RequestException:
+            except (requests.RequestException, UplinkError) as exc:
+                self._warn(f"frame upload failed for {cam_id}: {exc}")
                 break
         return sent
 
@@ -256,9 +360,14 @@ _instance = None
 def start():
     """Start sending to the cloud if it is configured."""
     global _instance
-    if _instance is None and enabled():
-        if not cfg.cloud_settings()["url"].startswith("https://"):
-            log.warning("the cloud address is not https:// - the secret key would travel unencrypted")
-        _instance = Uplink()
+    if _instance is None:
+        settings = _settings()
+        if settings is None:
+            log.info(
+                "cloud uplink disabled: configure cloud URL, ingest key, and site "
+                "in config.json or environment variables"
+            )
+            return None
+        _instance = Uplink(settings)
         _instance.start()
     return _instance
