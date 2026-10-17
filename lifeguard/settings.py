@@ -36,12 +36,8 @@ DEFAULT_STREAMS = {
 
 # --- detection ------------------------------------------------------------
 DETECTION_CONF = 0.30
-# A swimmer who vanishes for less than this (e.g. under the surface, behind a
-# splash) keeps their timer instead of being treated as having left the pool.
 LOST_TRACK_GRACE_SEC = 4
 
-# Default escalation: GREEN -> ORANGE (warn) -> RED (danger). The live values
-# come from the `system_settings` table, these are only the fallbacks.
 DEFAULT_WARN_SEC = 30
 DEFAULT_DANGER_SEC = 60
 DEFAULT_OCCUPANCY_INTERVAL_SEC = 5
@@ -49,9 +45,9 @@ OCCUPANCY_RETENTION_DAYS = 30
 
 # --- incident footage -----------------------------------------------------
 FOOTAGE_FOLDER_PREFIX = "AlertSaved-"
-FOOTAGE_FOLDER_DATE_FORMAT = "%m-%d-%y"        # AlertSaved-10-10-26 (month-day-year); "%d-%m-%y" = day first
-DEFAULT_FOOTAGE_RETENTION_DAYS = 14     # daily folders older than this are deleted automatically
-LOGIN_LOG_RETENTION_DAYS = 30           # retention days for prune_old_records
+FOOTAGE_FOLDER_DATE_FORMAT = "%m-%d-%y"
+DEFAULT_FOOTAGE_RETENTION_DAYS = 14
+LOGIN_LOG_RETENTION_DAYS = 30
 PRE_ROLL_SEC = 10
 POST_ROLL_SEC = 10
 
@@ -60,7 +56,6 @@ MAX_FAILED_ATTEMPTS = 5
 FAILURE_WINDOW_SECONDS = 60
 LOCK_SECONDS = 3 * 60 * 60
 
-# Add aliases for auth.py IP-based rate limiting
 IP_MAX_FAILED_ATTEMPTS = MAX_FAILED_ATTEMPTS
 IP_LOCK_SECONDS = LOCK_SECONDS
 
@@ -79,8 +74,8 @@ def load_secret_key():
 
     if SECRET_KEY_FILE.exists():
         try:
-            return SECRET_KEY_FILE.read_text(encoding="utf-8").strip()
-        except OSError as exc:
+            return SECRET_KEY_FILE.read_text(encoding="utf-8", errors="ignore").strip()
+        except (OSError, UnicodeDecodeError) as exc:
             log.warning("Could not read secret key file %s: %s", SECRET_KEY_FILE.name, exc)
 
     new_key = secrets.token_hex(32)
@@ -126,18 +121,12 @@ def set_config_value(key, value):
         tmp.write_text(json.dumps(data, indent=2), "utf-8")
         os.replace(tmp, CONFIG_FILE)
 
-        # Force load_config() to refresh its cache.
         _cache["mtime"] = None
 
 
 # --- cloud uplink settings --------------------------------------------------
 def cloud_settings():
-    """Return normalized cloud uplink settings, or None if credentials are absent.
-
-    Keeps the existing config.json format working (including its top-level
-    `remote_url`) and does not rewrite or replace that file. Secrets are best
-    supplied through environment variables rather than committed to JSON.
-    """
+    """Return normalized cloud uplink settings, or None if credentials are absent."""
     config = load_config()
     if not isinstance(config, dict):
         config = {}
@@ -176,8 +165,6 @@ def cloud_settings():
         config.get("site_id"),
     )
 
-    # URL alone is not enough: the cloud server requires both an ingest key
-    # and a stable site identifier. Return None instead of starting broken threads.
     if not url or not key or not site:
         return None
 
