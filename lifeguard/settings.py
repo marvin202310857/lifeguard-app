@@ -29,6 +29,7 @@ VALID_ROLES = ["User", "Administrator"]
 MAX_FAILED_ATTEMPTS = 5
 LOCK_SECONDS = 900
 FAILURE_WINDOW_SECONDS = 3600
+SESSION_LIFETIME_SEC = 86400  # 24 hours session lifetime
 REMOTE_URL = None
 
 # --- Cloud Database & Storage Credentials ---
