@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import secrets
 import threading
 from pathlib import Path
 
@@ -33,6 +34,7 @@ REMOTE_URL = None
 # --- Cloud Database & Storage Credentials ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or SUPABASE_SERVICE_ROLE_KEY
 SUPABASE_DB_URL = os.environ.get("SUPABASE_DB_URL")
 
 
@@ -137,4 +139,16 @@ def cloud_settings():
 
 def is_cloud():
     """Whether this process is running in a cloud deployment."""
-    return bool(os.environ.get("RENDER")) or os.environ.get("LIFEGUARD_CLOUD") == "1"
+    return (
+        bool(os.environ.get("RENDER"))
+        or os.environ.get("LIFEGUARD_CLOUD") == "1"
+        or os.environ.get("IS_CLOUD", "").lower() in ("true", "1")
+    )
+
+def load_secret_key():
+    """Retrieve secret key from environment or generate a fallback for session security."""
+    key = os.environ.get("FLASK_SECRET_KEY") or os.environ.get("SECRET_KEY")
+    if key:
+        return key
+    log.warning("No FLASK_SECRET_KEY set in environment; generating temporary secret key.")
+    return secrets.token_hex(32)
