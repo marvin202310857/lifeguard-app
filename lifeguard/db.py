@@ -109,6 +109,10 @@ class DBProxy:
 @contextmanager
 def connect():
     if hasattr(cfg, 'is_cloud') and cfg.is_cloud() and getattr(cfg, 'SUPABASE_DB_URL', None):
+        if psycopg2 is None:
+            raise RuntimeError(
+                "psycopg2 module is missing. Make sure psycopg2-binary is installed in requirements.txt"
+            )
         # Cloud connection to PostgreSQL
         conn = psycopg2.connect(cfg.SUPABASE_DB_URL)
         proxy = DBProxy(conn, is_pg=True)
