@@ -1,7 +1,7 @@
-"""SQLite access layer: users, login security, alerts, incidents, settings.
+"""SQLite and PostgreSQL access layer: users, login security, alerts, incidents, settings.
 
-One short-lived connection per call keeps things thread-safe; WAL mode (set
-once in init_db) lets the camera threads write while the web UI reads.
+One short-lived connection per call keeps things thread-safe. Wraps connections
+to support both local SQLite and cloud PostgreSQL (Supabase) via DBProxy.
 """
 import hashlib
 import hmac
@@ -15,6 +15,12 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
+
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from . import settings as cfg
@@ -24,35 +30,118 @@ log = logging.getLogger("lifeguard.db")
 _USERNAME_RE = re.compile(cfg.USERNAME_PATTERN)
 _LEGACY_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
-# login_throttle keys: "<account>|<address>" per account+address, "@ip|<address>" per address,
-# or a plain "<account>" in rows written by older versions.
-_THROTTLE_ACCOUNT_SQL = ("CASE WHEN instr(username, '|') > 0 "
-                         "THEN substr(username, 1, instr(username, '|') - 1) ELSE username END")
-
 # Constant-time dummy check so unknown usernames take as long as real ones.
 _DUMMY_HASH = generate_password_hash("lifeguard-dummy-password")
+
+
+def _get_throttle_account_sql(is_pg):
+    """Handles the SQL dialect differences for extracting account strings."""
+    if is_pg:
+        return ("CASE WHEN strpos(username, '|') > 0 "
+                "THEN substring(username from 1 for strpos(username, '|') - 1) ELSE username END")
+    return ("CASE WHEN instr(username, '|') > 0 "
+            "THEN substr(username, 1, instr(username, '|') - 1) ELSE username END")
 
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+class DBProxy:
+    """Wraps DB connections to unify SQLite and PostgreSQL execution."""
+    def __init__(self, conn, is_pg=False):
+        self.conn = conn
+        self.is_pg = is_pg
+        self.cursor = conn.cursor() if is_pg else conn
+        self._last_insert_id = None
+
+    def execute(self, query, params=()):
+        if self.is_pg:
+            # Translate SQLite '?' to PostgreSQL '%s'
+            query = query.replace("?", "%s")
+            
+            # Handle SQLite's NOCASE and string functions
+            query = query.replace("COLLATE NOCASE", "")
+            
+            # Handle SQLite's .lastrowid via RETURNING id for PostgreSQL
+            is_insert = query.strip().upper().startswith("INSERT")
+            if is_insert and "RETURNING" not in query.upper() and not query.strip().upper().startswith("INSERT OR IGNORE") and "ON CONFLICT" not in query.upper():
+                query += " RETURNING id"
+                
+            self.cursor.execute(query, params)
+            
+            if is_insert:
+                try:
+                    self._last_insert_id = self.cursor.fetchone()["id"]
+                except (psycopg2.ProgrammingError, TypeError, KeyError):
+                    self._last_insert_id = None
+        else:
+            self.cursor.execute(query, params)
+            self._last_insert_id = self.cursor.lastrowid
+        return self
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+    @property
+    def lastrowid(self):
+        return self._last_insert_id
+
+    @property
+    def rowcount(self):
+        return self.cursor.rowcount
+
+    def commit(self):
+        self.conn.commit()
+
+    def rollback(self):
+        self.conn.rollback()
+
+    def close(self):
+        if self.is_pg:
+            self.cursor.close()
+        self.conn.close()
+
+
 @contextmanager
 def connect():
-    conn = sqlite3.connect(str(cfg.DB_PATH), timeout=30)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA busy_timeout=30000")
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    if hasattr(cfg, 'is_cloud') and cfg.is_cloud() and getattr(cfg, 'SUPABASE_DB_URL', None):
+        # Cloud connection to PostgreSQL
+        conn = psycopg2.connect(cfg.SUPABASE_DB_URL)
+        proxy = DBProxy(conn, is_pg=True)
+        # Use RealDictCursor to mimic SQLite's Row factory behavior
+        proxy.cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            yield proxy
+            proxy.commit()
+        except Exception:
+            proxy.rollback()
+            raise
+        finally:
+            proxy.close()
+    else:
+        # Local connection to SQLite
+        conn = sqlite3.connect(str(cfg.DB_PATH), timeout=30)
+        conn.row_factory = sqlite3.Row
+        proxy = DBProxy(conn, is_pg=False)
+        try:
+            proxy.execute("PRAGMA busy_timeout=30000")
+            yield proxy
+            proxy.commit()
+        except Exception:
+            proxy.rollback()
+            raise
+        finally:
+            proxy.close()
 
 
 def _add_column_if_missing(conn, table, column, definition):
+    if conn.is_pg:
+        # PostgreSQL handled via central schema initialization script
+        return 
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -63,6 +152,12 @@ def init_db():
     """Create tables, migrate older databases, seed settings and the first admin."""
     cfg.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with connect() as c:
+        if c.is_pg:
+            # Cloud tables are managed by the Supabase SQL migration script. 
+            # We only ensure the admin exists.
+            _ensure_admin_exists()
+            return
+
         c.execute("PRAGMA journal_mode=WAL")
 
         c.execute("""
@@ -74,9 +169,6 @@ def init_db():
                 approved INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT
             )""")
-        # Older databases (Node / early Python versions) lack some columns and
-        # stored the hash in `password`. That column is left untouched but is
-        # no longer written; password_hash is the single source of truth.
         _add_column_if_missing(c, "users", "password_hash", "TEXT")
         _add_column_if_missing(c, "users", "created_at", "TEXT")
         legacy_cols = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
@@ -158,17 +250,12 @@ def init_db():
                 video_state TEXT NOT NULL DEFAULT 'RECORDING'
             )""")
 
-        # Footage now lives on disk (see footage.py). The old BLOB columns stay only so
-        # existing rows can be migrated; they are read as a fallback until then.
         _add_column_if_missing(c, "incidents", "snapshot_path", "TEXT")
         _add_column_if_missing(c, "incidents", "video_path", "TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS idx_incidents_created ON incidents(created_at)")
-        # Split deployment: an incident sent by the pool computer carries a unique reference, so a
-        # retried upload can never create it twice.
         _add_column_if_missing(c, "incidents", "client_ref", "TEXT")
         c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_incidents_ref ON incidents(client_ref) "
                   "WHERE client_ref IS NOT NULL")
-        # Pool computer: items waiting to be sent to the cloud, and which cloud incident each became.
         c.execute("""
             CREATE TABLE IF NOT EXISTS uplink_outbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,7 +266,6 @@ def init_db():
             )""")
         c.execute("CREATE TABLE IF NOT EXISTS uplink_map (local_id INTEGER PRIMARY KEY, cloud_id INTEGER NOT NULL)")
 
-        # Incidents left in RECORDING by a crash/restart will never get footage.
         c.execute("UPDATE incidents SET video_state='FAILED' "
                   "WHERE video_state='RECORDING' AND video IS NULL")
         c.execute("DELETE FROM occupancy_logs WHERE timestamp < datetime('now', 'localtime', ?)",
@@ -199,7 +285,7 @@ def _ensure_admin_exists():
     if len(password) < cfg.MIN_PASSWORD_LENGTH:
         password = secrets.token_urlsafe(12)
     ok, err = register_user("admin", password, "Administrator")
-    if not ok:  # username 'admin' exists but isn't an approved admin
+    if not ok:
         with connect() as c:
             c.execute("UPDATE users SET role='Administrator', approved=1, password_hash=? "
                       "WHERE username='admin' COLLATE NOCASE", (generate_password_hash(password),))
@@ -246,17 +332,18 @@ def get_user(username):
 
 def list_users():
     with connect() as c:
-        rows = c.execute(f"""
+        sql = f"""
             SELECT u.id, u.username, u.role, u.approved, u.created_at,
                    COALESCE(t.failed_attempts, 0) AS failed_attempts,
                    COALESCE(t.locked_until, 0)    AS locked_until
             FROM users u
             LEFT JOIN (
-                SELECT {_THROTTLE_ACCOUNT_SQL} AS account,
+                SELECT {_get_throttle_account_sql(c.is_pg)} AS account,
                        MAX(failed_attempts) AS failed_attempts, MAX(locked_until) AS locked_until
                 FROM login_throttle WHERE username NOT LIKE '@ip|%' GROUP BY account
             ) t ON t.account = u.username COLLATE NOCASE
-            ORDER BY u.approved ASC, u.created_at DESC""").fetchall()
+            ORDER BY u.approved ASC, u.created_at DESC"""
+        rows = c.execute(sql).fetchall()
     now = time.time()
     users = []
     for row in rows:
@@ -275,19 +362,18 @@ def approve_user(user_id):
 
 
 def delete_user(user_id):
-    """-> (ok, username_or_error). Refuses to remove the last administrator."""
     user_id = str(user_id)
     with connect() as c:
         row = c.execute("SELECT username, role, approved FROM users WHERE id=?", (user_id,)).fetchone()
         if not row:
             return False, "User not found."
         if row["role"] == "Administrator" and row["approved"]:
-            others = c.execute("SELECT COUNT(*) FROM users WHERE role='Administrator' "
-                               "AND approved=1 AND id<>?", (user_id,)).fetchone()[0]
+            others = c.execute("SELECT COUNT(*) as count FROM users WHERE role='Administrator' "
+                               "AND approved=1 AND id<>?", (user_id,)).fetchone()["count"]
             if others == 0:
                 return False, "You can't remove the last administrator."
         c.execute("DELETE FROM users WHERE id=?", (user_id,))
-        c.execute(f"DELETE FROM login_throttle WHERE ({_THROTTLE_ACCOUNT_SQL}) = ? COLLATE NOCASE", (row["username"],))
+        c.execute(f"DELETE FROM login_throttle WHERE ({_get_throttle_account_sql(c.is_pg)}) = ? COLLATE NOCASE", (row["username"],))
     return True, row["username"]
 
 
@@ -299,13 +385,10 @@ def set_password(user_id, password):
 
 # ============================================================ passwords
 def is_legacy_hash(stored):
-    """Unsalted SHA-256 hex digests written by the old Node server."""
     return bool(_LEGACY_SHA256_RE.match(stored or ""))
 
 
 def _legacy_matches(stored, password):
-    # The Node server hashed once for registration, but upsert() hashed that
-    # digest a second time, so both single and double digests exist in the wild.
     single = hashlib.sha256(password.encode()).hexdigest()
     double = hashlib.sha256(single.encode()).hexdigest()
     return hmac.compare_digest(stored, single) or hmac.compare_digest(stored, double)
@@ -329,7 +412,6 @@ def verify_password(user, password):
 
 # ============================================================ login throttle
 def get_lock_remaining(key):
-    """Seconds left on a lock. `key` is an account+address, address or (old) account key."""
     with connect() as c:
         row = c.execute("SELECT locked_until FROM login_throttle WHERE username=?", (key,)).fetchone()
     return max(0, int(float(row["locked_until"]) - time.time())) if row else 0
@@ -337,7 +419,6 @@ def get_lock_remaining(key):
 
 def record_failed_attempt(key, max_attempts=cfg.MAX_FAILED_ATTEMPTS, lock_seconds=cfg.LOCK_SECONDS,
                           window_seconds=cfg.FAILURE_WINDOW_SECONDS):
-    """Count a failed login for `key`. -> (attempts_remaining, just_locked)"""
     now = time.time()
     with connect() as c:
         row = c.execute("SELECT failed_attempts, locked_until, last_attempt FROM login_throttle WHERE username=?",
@@ -350,14 +431,25 @@ def record_failed_attempt(key, max_attempts=cfg.MAX_FAILED_ATTEMPTS, lock_second
                 attempts = int(row["failed_attempts"] or 0)
         attempts += 1
         just_locked = attempts >= max_attempts
-        c.execute("""
-            INSERT INTO login_throttle (username, failed_attempts, locked_until, last_attempt)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(username) DO UPDATE SET
-                failed_attempts=excluded.failed_attempts,
-                locked_until=excluded.locked_until,
-                last_attempt=excluded.last_attempt""",
-                  (key, attempts, now + lock_seconds if just_locked else 0, now))
+        
+        if c.is_pg:
+            upsert_sql = """
+                INSERT INTO login_throttle (username, failed_attempts, locked_until, last_attempt)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (username) DO UPDATE SET
+                    failed_attempts=EXCLUDED.failed_attempts,
+                    locked_until=EXCLUDED.locked_until,
+                    last_attempt=EXCLUDED.last_attempt"""
+        else:
+            upsert_sql = """
+                INSERT INTO login_throttle (username, failed_attempts, locked_until, last_attempt)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    failed_attempts=excluded.failed_attempts,
+                    locked_until=excluded.locked_until,
+                    last_attempt=excluded.last_attempt"""
+                    
+        c.execute(upsert_sql, (key, attempts, now + lock_seconds if just_locked else 0, now))
     return max(0, max_attempts - attempts), just_locked
 
 
@@ -367,10 +459,9 @@ def reset_throttle(key):
 
 
 def clear_account_throttle(username):
-    """Unlock an account for every address (administrator action)."""
     with connect() as c:
         c.execute(f"DELETE FROM login_throttle WHERE username NOT LIKE '@ip|%' "
-                  f"AND ({_THROTTLE_ACCOUNT_SQL}) = ? COLLATE NOCASE", ((username or "").strip(),))
+                  f"AND ({_get_throttle_account_sql(c.is_pg)}) = ? COLLATE NOCASE", ((username or "").strip(),))
 
 
 # ============================================================ logs & alerts
@@ -404,7 +495,6 @@ def get_admin_alerts(only_open=True, limit=50):
 
 
 def ack_admin_alert(alert_id=None):
-    """Acknowledge one alert, or every open alert when alert_id is None."""
     with connect() as c:
         if alert_id is None:
             c.execute("UPDATE admin_alerts SET acknowledged=1")
@@ -424,10 +514,15 @@ def get_setting_int(key, default):
 
 def set_setting(key, value):
     with connect() as c:
-        c.execute("""INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
-                     ON CONFLICT(key) DO UPDATE SET
-                         value=excluded.value, updated_at=excluded.updated_at""",
-                  (key, str(value), now_str()))
+        if c.is_pg:
+            upsert_sql = """INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+                            ON CONFLICT (key) DO UPDATE SET
+                                value=EXCLUDED.value, updated_at=EXCLUDED.updated_at"""
+        else:
+            upsert_sql = """INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+                            ON CONFLICT(key) DO UPDATE SET
+                                value=excluded.value, updated_at=excluded.updated_at"""
+        c.execute(upsert_sql, (key, str(value), now_str()))
 
 
 def log_occupancy(camera_id, people_in_pool, people_poolside, submerged_count):
@@ -448,8 +543,6 @@ _INCIDENT_COLUMNS = """
 
 def create_incident(cam_id, track_id, elapsed_sec, event="Drowning Risk Detected", alert_level="DANGER",
                     created_at=None, client_ref=None):
-    """-> (incident_id, created_at). Media files are attached afterwards by footage.py.
-    `created_at`/`client_ref` are given when the pool computer reports an incident to the cloud."""
     now = created_at or now_str()
     with connect() as c:
         incident_id = c.execute("""
@@ -504,7 +597,6 @@ def set_incident_media(incident_id, snapshot_path=None, video_path=None, video_m
 
 
 def attach_video(incident_ids, video_path, mime):
-    """Mark the clip ready (video_path given) or failed (None) for every incident it covers."""
     with connect() as c:
         for incident_id in incident_ids:
             if video_path:
@@ -522,25 +614,33 @@ def list_incidents(limit=60):
 
 
 def list_incidents_for_day(day):
-    """Incidents created on `day` (YYYY-MM-DD), newest first."""
     with connect() as c:
-        rows = c.execute(f"SELECT {_INCIDENT_COLUMNS} FROM incidents "
-                         "WHERE substr(created_at, 1, 10) = ? ORDER BY id DESC", (day,)).fetchall()
+        if c.is_pg:
+            rows = c.execute(f"SELECT {_INCIDENT_COLUMNS} FROM incidents "
+                             "WHERE CAST(created_at AS TEXT) LIKE ? || '%' ORDER BY id DESC", (day,)).fetchall()
+        else:
+            rows = c.execute(f"SELECT {_INCIDENT_COLUMNS} FROM incidents "
+                             "WHERE substr(created_at, 1, 10) = ? ORDER BY id DESC", (day,)).fetchall()
     return [dict(r) for r in rows]
 
 
 def incident_counts_by_day():
     with connect() as c:
-        rows = c.execute("SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n "
-                         "FROM incidents GROUP BY day").fetchall()
+        if c.is_pg:
+            rows = c.execute("SELECT SUBSTRING(CAST(created_at AS TEXT) FROM 1 FOR 10) AS day, COUNT(*) AS n "
+                             "FROM incidents GROUP BY day").fetchall()
+        else:
+            rows = c.execute("SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n "
+                             "FROM incidents GROUP BY day").fetchall()
     return {r["day"]: r["n"] for r in rows}
 
 
 def get_incident_blob(incident_id, column):
-    """Legacy fallback: -> (bytes, mime) from the old BLOB columns, else (None, None)."""
     if column not in ("snapshot", "video"):
         return None, None
     with connect() as c:
+        if c.is_pg:
+            return None, None # PostgreSQL migration uses Storage exclusively
         row = c.execute(f"SELECT {column} AS blob, video_mime FROM incidents WHERE id=?",
                         (int(incident_id),)).fetchone()
     if not row or row["blob"] is None:
@@ -550,6 +650,8 @@ def get_incident_blob(incident_id, column):
 
 def legacy_blob_incident_ids():
     with connect() as c:
+        if c.is_pg:
+            return []
         rows = c.execute("""SELECT id FROM incidents
                             WHERE (snapshot IS NOT NULL AND snapshot_path IS NULL)
                                OR (video    IS NOT NULL AND video_path    IS NULL)""").fetchall()
@@ -557,7 +659,6 @@ def legacy_blob_incident_ids():
 
 
 def delete_incident(incident_id):
-    """-> (deleted, [media paths that belonged to it]); the caller removes unused files."""
     with connect() as c:
         row = c.execute("SELECT snapshot_path, video_path FROM incidents WHERE id=?",
                         (int(incident_id),)).fetchone()
@@ -568,14 +669,17 @@ def delete_incident(incident_id):
 
 
 def delete_incidents_through(day):
-    """Delete every incident created on or before `day` (YYYY-MM-DD). -> rows deleted"""
     with connect() as c:
+        if c.is_pg:
+            return c.execute("DELETE FROM incidents WHERE CAST(created_at AS TEXT) <= ? || ' 23:59:59'", (day,)).rowcount
         return c.execute("DELETE FROM incidents WHERE substr(created_at, 1, 10) <= ?", (day,)).rowcount
 
 
 def rename_media_folder(old_folder, new_folder):
-    """Point stored media paths at a renamed day folder ('2026-10-10' -> 'AlertSaved-10-10-26')."""
     with connect() as c:
+        if c.is_pg:
+            # PostgreSQL migration doesn't re-root bucket folders based on day files
+            return
         for column in ("snapshot_path", "video_path"):
             c.execute(f"UPDATE incidents SET {column} = ? || substr({column}, ?) WHERE {column} LIKE ?",
                       (new_folder, len(old_folder) + 1, old_folder + "/%"))
@@ -587,7 +691,7 @@ def media_path_in_use(relative_path):
                          (relative_path, relative_path)).fetchone() is not None
 
 
-# ============================================================ uplink (pool computer -> cloud)
+# ============================================================ uplink
 def outbox_add(kind, incident_id):
     with connect() as c:
         c.execute("INSERT INTO uplink_outbox (kind, incident_id, created_at) VALUES (?, ?, ?)",
@@ -618,13 +722,18 @@ def outbox_has(kind, incident_id):
 
 def outbox_size():
     with connect() as c:
-        return c.execute("SELECT COUNT(*) FROM uplink_outbox").fetchone()[0]
+        return c.execute("SELECT COUNT(*) as count FROM uplink_outbox").fetchone()["count"]
 
 
 def map_set(local_id, cloud_id):
     with connect() as c:
-        c.execute("INSERT OR REPLACE INTO uplink_map (local_id, cloud_id) VALUES (?, ?)",
-                  (int(local_id), int(cloud_id)))
+        if c.is_pg:
+            c.execute("""INSERT INTO uplink_map (local_id, cloud_id) VALUES (?, ?)
+                         ON CONFLICT (local_id) DO UPDATE SET cloud_id=EXCLUDED.cloud_id""",
+                      (int(local_id), int(cloud_id)))
+        else:
+            c.execute("INSERT OR REPLACE INTO uplink_map (local_id, cloud_id) VALUES (?, ?)",
+                      (int(local_id), int(cloud_id)))
 
 
 def map_get(local_id):
@@ -634,28 +743,37 @@ def map_get(local_id):
 
 
 def prune_old_records():
-    """Delete records past their retention so a system that runs for months doesn't grow forever.
-    -> {'occupancy': n, 'login_logs': n, 'alerts': n, 'throttle': n}"""
     now = time.time()
-    occupancy_cutoff = f"-{cfg.OCCUPANCY_RETENTION_DAYS} days"
-    log_cutoff = f"-{cfg.LOGIN_LOG_RETENTION_DAYS} days"
     with connect() as c:
-        removed = {
-            "occupancy": c.execute("DELETE FROM occupancy_logs WHERE timestamp < datetime('now','localtime',?)",
-                                   (occupancy_cutoff,)).rowcount,
-            "login_logs": c.execute("DELETE FROM login_logs WHERE created_at < datetime('now','localtime',?)",
-                                    (log_cutoff,)).rowcount,
-            "alerts": c.execute("DELETE FROM admin_alerts WHERE acknowledged=1 "
-                                "AND created_at < datetime('now','localtime',?)", (log_cutoff,)).rowcount,
-            # failed-login counters whose lock ended and whose window has passed
-            "throttle": c.execute("DELETE FROM login_throttle WHERE locked_until < ? AND last_attempt < ?",
-                                  (now, now - cfg.FAILURE_WINDOW_SECONDS)).rowcount,
-        }
+        if c.is_pg:
+            occupancy_cutoff = f"{cfg.OCCUPANCY_RETENTION_DAYS} days"
+            log_cutoff = f"{cfg.LOGIN_LOG_RETENTION_DAYS} days"
+            removed = {
+                "occupancy": c.execute("DELETE FROM occupancy_logs WHERE timestamp < NOW() - INTERVAL %s", (occupancy_cutoff,)).rowcount,
+                "login_logs": c.execute("DELETE FROM login_logs WHERE created_at < NOW() - INTERVAL %s", (log_cutoff,)).rowcount,
+                "alerts": c.execute("DELETE FROM admin_alerts WHERE acknowledged=1 "
+                                    "AND created_at < NOW() - INTERVAL %s", (log_cutoff,)).rowcount,
+                "throttle": c.execute("DELETE FROM login_throttle WHERE locked_until < ? AND last_attempt < ?",
+                                      (now, now - cfg.FAILURE_WINDOW_SECONDS)).rowcount,
+            }
+        else:
+            occupancy_cutoff = f"-{cfg.OCCUPANCY_RETENTION_DAYS} days"
+            log_cutoff = f"-{cfg.LOGIN_LOG_RETENTION_DAYS} days"
+            removed = {
+                "occupancy": c.execute("DELETE FROM occupancy_logs WHERE timestamp < datetime('now','localtime',?)",
+                                       (occupancy_cutoff,)).rowcount,
+                "login_logs": c.execute("DELETE FROM login_logs WHERE created_at < datetime('now','localtime',?)",
+                                        (log_cutoff,)).rowcount,
+                "alerts": c.execute("DELETE FROM admin_alerts WHERE acknowledged=1 "
+                                    "AND created_at < datetime('now','localtime',?)", (log_cutoff,)).rowcount,
+                "throttle": c.execute("DELETE FROM login_throttle WHERE locked_until < ? AND last_attempt < ?",
+                                      (now, now - cfg.FAILURE_WINDOW_SECONDS)).rowcount,
+            }
         c.execute("DELETE FROM uplink_map WHERE local_id NOT IN (SELECT id FROM incidents)")
     return removed
 
 
 def compact():
-    """Shrink the database file after media moved out of it."""
     with connect() as c:
-        c.execute("VACUUM")
+        if not c.is_pg:
+            c.execute("VACUUM")

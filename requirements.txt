@@ -6,3 +6,5 @@ opencv-python>=4.8       # use opencv-python-headless on a server with no displa
 ultralytics>=8.2         # YOLOv8 person detection + ByteTrack
 waitress>=3.0
 opencv-python-headless
+psycopg2-binary>=2.9.9
+supabase>=2.3.0

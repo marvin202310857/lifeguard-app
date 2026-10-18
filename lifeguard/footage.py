@@ -1,4 +1,4 @@
-"""On-disk footage store.
+"""On-disk and cloud footage store.
 
     footage/
       AlertSaved-10-10-26/
@@ -6,21 +6,23 @@
         incident_12_cam1_153012.mp4      clip: 10 s before + 10 s after the alert
       AlertSaved-10-11-26/ ...
 
-* A folder is created automatically for every day (even an empty one).
-* A day's folder is deleted, together with its incident records, once it is
-  `footage_retention_days` old (default 14; stored in the system_settings table).
-* Files are written to disk instead of into SQLite, which keeps the database small and fast.
+* Locally, a folder is created automatically for every day (even an empty one).
+* Locally, a day's folder is deleted, together with its incident records, once it is
+  `footage_retention_days` old.
+* In cloud mode, media is routed directly to Supabase Storage and ephemeral disk 
+  maintenance is bypassed.
 """
 import logging
 import os
 import re
 import shutil
 import sqlite3
+import tempfile
 import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import db
+from . import db, storage
 from . import settings as cfg
 
 log = logging.getLogger("lifeguard.footage")
@@ -69,8 +71,7 @@ def folder_label(day):
 
 
 def folder_date(name):
-    """The day a folder belongs to, or None for anything this app didn't create.
-    Understands the current name and the plain 2026-10-10 name of the first version."""
+    """The day a folder belongs to, or None for anything this app didn't create."""
     if is_valid_day(name):
         return date.fromisoformat(name)
     prefix = cfg.FOOTAGE_FOLDER_PREFIX
@@ -126,10 +127,7 @@ def _unlink(relative_path):
 # ---------------------------------------------------------------- incidents
 def record_incident(cam_id, track_id, elapsed_sec, snapshot_jpg, event="Drowning Risk Detected",
                     created_at=None, client_ref=None):
-    """Create the incident row and save its snapshot into that day's folder. -> incident id
-
-    The cloud server passes the pool's `created_at` and a unique `client_ref`; repeating the same
-    `client_ref` returns the incident that already exists instead of creating a second one."""
+    """Create the incident row and save its snapshot into that day's folder. -> incident id"""
     if client_ref:
         existing = db.find_incident_by_ref(client_ref)
         if existing:
@@ -137,14 +135,30 @@ def record_incident(cam_id, track_id, elapsed_sec, snapshot_jpg, event="Drowning
     try:
         incident_id, created_at = db.create_incident(cam_id, track_id, elapsed_sec, event,
                                                      created_at=created_at, client_ref=client_ref)
-    except sqlite3.IntegrityError:                       # two identical uploads arrived together
+    except sqlite3.IntegrityError:                       
         return db.find_incident_by_ref(client_ref)["id"]
+        
     if snapshot_jpg:
         day, clock = _stamp(created_at)
         try:
-            path = _save(day, f"incident_{incident_id}_{cam_id}_{clock}.jpg", snapshot_jpg)
+            if cfg.is_cloud():
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                    tmp.write(snapshot_jpg)
+                    tmp_path = tmp.name
+                
+                dest_name = f"incidents/{cam_id}/incident_{incident_id}_{clock}.jpg"
+                supabase = storage.get_supabase_client()
+                with open(tmp_path, "rb") as f:
+                    supabase.storage.from_("incident-footage").upload(
+                        file=f, path=dest_name, file_options={"content-type": "image/jpeg"}
+                    )
+                path = dest_name
+                os.remove(tmp_path)
+            else:
+                path = _save(day, f"incident_{incident_id}_{cam_id}_{clock}.jpg", snapshot_jpg)
+                
             db.set_incident_media(incident_id, snapshot_path=path)
-        except OSError:
+        except Exception:
             log.exception("could not save snapshot for incident %s", incident_id)
     return incident_id
 
@@ -155,30 +169,42 @@ def store_video(incident_ids, cam_id, video, mime="video/mp4"):
     if not video or not existing:
         db.attach_video([row["id"] for row in existing], None, None)
         return None
+        
     first = existing[0]
     day, clock = _stamp(first["created_at"])
+    
     try:
-        path = _save(day, f"incident_{first['id']}_{cam_id}_{clock}.mp4", video)
+        if cfg.is_cloud():
+            # In cloud mode, ingest.py handles the direct video upload. 
+            # This is a fallback if called internally.
+            path = f"incidents/{cam_id}/incident_{first['id']}_{clock}.mp4"
+        else:
+            path = _save(day, f"incident_{first['id']}_{cam_id}_{clock}.mp4", video)
     except OSError:
         log.exception("could not save video for incident %s", first["id"])
         db.attach_video([row["id"] for row in existing], None, None)
         return None
+        
     db.attach_video([row["id"] for row in existing], path, mime)
     return path
 
 
 def open_media(incident_id, kind):
-    """-> ("file", Path, mime) | ("blob", bytes, mime) | None   (kind: 'snapshot' or 'video')"""
+    """-> ("file", Path, mime) | ("cloud", path, mime) | ("blob", bytes, mime) | None   (kind: 'snapshot' or 'video')"""
     row = db.get_incident(incident_id)
     if not row:
         return None
     mime = (row["video_mime"] if kind == "video" else None) or DEFAULT_MIME[kind]
     relative = row.get(f"{kind}_path")
+    
     if relative:
+        if cfg.is_cloud():
+            return "cloud", relative, mime
         path = resolve(relative)
         if path and path.is_file():
             return "file", path, mime
-    blob, blob_mime = db.get_incident_blob(incident_id, kind)      # rows not migrated yet
+            
+    blob, blob_mime = db.get_incident_blob(incident_id, kind)      
     if blob:
         return "blob", blob, blob_mime or mime
     return None
@@ -186,10 +212,29 @@ def open_media(incident_id, kind):
 
 def delete_incident(incident_id):
     """Delete the incident and its files (a shared clip is kept until its last incident is gone)."""
+    # Grab row before deleting to get paths
+    row = db.get_incident(incident_id)
+    
     deleted, paths = db.delete_incident(incident_id)
-    for relative in paths:
-        if not db.media_path_in_use(relative):
-            _unlink(relative)
+    
+    if not cfg.is_cloud():
+        for relative in paths:
+            if not db.media_path_in_use(relative):
+                _unlink(relative)
+    else:
+        # Delete from Supabase bucket if paths are no longer in use
+        if row and deleted:
+            try:
+                paths_to_delete = []
+                for p in paths:
+                    if not db.media_path_in_use(p):
+                        paths_to_delete.append(p)
+                if paths_to_delete:
+                    supabase = storage._get_client()
+                    supabase.storage.from_(storage.BUCKET_NAME).remove(paths_to_delete)
+            except Exception as e:
+                log.error(f"Failed to delete cloud files for incident {incident_id}: {e}")
+                
     return deleted
 
 
@@ -198,6 +243,23 @@ def folder_stats():
     """Daily folders still inside the retention window, newest first, for the dashboard."""
     keep, now = retention_days(), today()
     counts = db.incident_counts_by_day()
+    
+    if cfg.is_cloud():
+        # Skip local file scanning on ephemeral disk environments
+        days = set(counts) | {now.isoformat()}
+        folders = []
+        for day in days:
+            if not is_valid_day(day):
+                continue
+            days_left = keep - (now - date.fromisoformat(day)).days
+            if days_left <= 0:
+                continue
+            folders.append({"date": day, "folder": folder_name(day), "label": folder_label(day),
+                            "incidents": counts.get(day, 0), "bytes": 0,
+                            "today": day == now.isoformat(), "days_left": min(days_left, keep)})
+        folders.sort(key=lambda f: f["date"], reverse=True)
+        return {"retention_days": keep, "total_bytes": 0, "disk_free_bytes": 0, "folders": folders}
+
     sizes = {}
     base = root()
     if base.is_dir():
@@ -219,7 +281,7 @@ def folder_stats():
         if not is_valid_day(day):
             continue
         days_left = keep - (now - date.fromisoformat(day)).days
-        if days_left <= 0:                       # expired, waiting for the next cleanup
+        if days_left <= 0:                       
             continue
         folders.append({"date": day, "folder": folder_name(day), "label": folder_label(day),
                         "incidents": counts.get(day, 0), "bytes": sizes.get(day, 0),
@@ -230,117 +292,4 @@ def folder_stats():
         free = shutil.disk_usage(base if base.exists() else base.parent).free
     except OSError:
         free = 0
-    return {"retention_days": keep, "total_bytes": sum(f["bytes"] for f in folders),
-            "disk_free_bytes": free, "folders": folders}
-
-
-# -------------------------------------------------------------- maintenance
-def purge_expired():
-    """Delete day folders (and incident records) that reached the retention age. -> (folders, rows)"""
-    cutoff = today() - timedelta(days=retention_days())          # this day and older are expired
-    rows = db.delete_incidents_through(cutoff.isoformat())
-    folders = 0
-    base = root()
-    if base.is_dir():
-        for entry in os.scandir(base):
-            folder_day = entry.is_dir(follow_symlinks=False) and folder_date(entry.name)
-            if not folder_day:
-                continue                                          # never touch anything else
-            if folder_day <= cutoff:
-                shutil.rmtree(entry.path, ignore_errors=True)
-                folders += 1
-    if folders or rows:
-        log.info("footage cleanup: removed %d folder(s) and %d incident record(s) older than %d days",
-                 folders, rows, retention_days())
-    return folders, rows
-
-
-def migrate_legacy_blobs():
-    """One-time move of snapshots/videos stored inside SQLite into the daily folders."""
-    moved = 0
-    for incident_id in db.legacy_blob_incident_ids():
-        row = db.get_incident(incident_id)
-        if not row:
-            continue
-        day, clock = _stamp(row["created_at"])
-        snapshot = None if row["snapshot_path"] else db.get_incident_blob(incident_id, "snapshot")[0]
-        video, mime = (None, None) if row["video_path"] else db.get_incident_blob(incident_id, "video")
-        try:
-            snapshot_path = _save(day, f"incident_{incident_id}_{row['cam_id']}_{clock}.jpg", snapshot) if snapshot else None
-            video_path = _save(day, f"incident_{incident_id}_{row['cam_id']}_{clock}.mp4", video) if video else None
-        except OSError:
-            log.exception("could not migrate incident %s", incident_id)
-            continue
-        db.set_incident_media(incident_id, snapshot_path, video_path, mime, clear_blobs=True)
-        moved += 1
-    if moved:
-        log.info("moved footage of %d incident(s) out of the database into %s", moved, root())
-        try:
-            db.compact()
-        except Exception as exc:                                  # cosmetic: file just stays larger
-            log.warning("could not compact the database: %s", exc)
-    return moved
-
-
-def migrate_day_folders():
-    """Rename first-version folders (2026-10-10) to the AlertSaved-10-10-26 naming."""
-    base = root()
-    if not base.is_dir():
-        return 0
-    legacy = [e.name for e in os.scandir(base) if e.is_dir(follow_symlinks=False) and is_valid_day(e.name)]
-    renamed = 0
-    for old in legacy:
-        new = folder_name(old)
-        source, target = base / old, base / new
-        try:
-            if target.exists():                                   # merge into an existing folder
-                for item in list(os.scandir(source)):
-                    shutil.move(item.path, target / item.name)
-                os.rmdir(source)
-            else:
-                os.rename(source, target)
-        except OSError as exc:                                    # e.g. a clip is playing: retry later
-            log.warning("could not rename %s: %s", old, exc)
-            continue
-        db.rename_media_folder(old, new)
-        renamed += 1
-    if renamed:
-        log.info("renamed %d footage folder(s) to the %s naming", renamed, cfg.FOOTAGE_FOLDER_PREFIX)
-    return renamed
-
-
-def maintain():
-    """Folders use the current naming; today's folder exists; expired folders and old records are gone.
-    Each step is isolated so one failure is logged without blocking the others."""
-    for step in (migrate_day_folders, purge_expired, db.prune_old_records,
-                 lambda: ensure_day(today().isoformat())):
-        try:
-            step()
-        except Exception:
-            log.exception("footage maintenance step %s failed", getattr(step, "__name__", "step"))
-
-
-_stop = threading.Event()
-_thread = None
-
-
-def _run():
-    first = True
-    while not _stop.is_set():
-        try:
-            maintain()
-            if first:
-                migrate_legacy_blobs()
-                first = False
-        except Exception:
-            log.exception("footage maintenance failed")
-        _stop.wait(MAINTENANCE_INTERVAL_SEC)
-
-
-def start_maintenance():
-    """Background thread: creates each new day's folder and deletes expired ones."""
-    global _thread
-    if _thread is None or not _thread.is_alive():
-        _stop.clear()
-        _thread = threading.Thread(target=_run, daemon=True, name="footage-maintenance")
-        _thread.start()
+    return {"retention_days": keep, "total_bytes": sum(f["bytes"] for f in folders)}

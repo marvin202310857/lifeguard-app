@@ -1,9 +1,9 @@
 """Administrator API: accounts, activity log, security alerts and incident footage."""
 from io import BytesIO
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, jsonify, request, send_file, redirect
 
-from . import db, footage
+from . import db, footage, storage
 from .auth import admin_required, client_ip, current_user, fail, json_body
 
 bp = Blueprint("admin", __name__, url_prefix="/api")
@@ -83,7 +83,16 @@ def _serve_media(incident_id, kind):
     media = footage.open_media(incident_id, kind)
     if not media:
         return fail(f"No {kind} for this incident.", 404)
+        
     source, data, mime = media
+    
+    if source == "cloud":
+        # 'data' contains the relative storage path in the cloud bucket
+        secure_url = storage.get_secure_video_url(data)
+        if secure_url:
+            return redirect(secure_url)
+        return fail(f"Could not generate secure playback URL for {kind}.", 500)
+        
     extension = "mp4" if kind == "video" else "jpg"
     return send_file(data if source == "file" else BytesIO(data), mimetype=mime, conditional=True,
                      download_name=f"incident_{incident_id}.{extension}",

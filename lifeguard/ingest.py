@@ -9,10 +9,11 @@ import json
 import logging
 import os
 import re
+import tempfile
 
 from flask import Blueprint, jsonify, request
 
-from . import db, footage
+from . import db, footage, storage
 from . import settings as cfg
 from .auth import client_ip, fail
 from .cloud import RemoteCamera
@@ -37,7 +38,7 @@ def authenticate():
     if not hmac.compare_digest(token.encode(), key.encode()):
         log.warning("rejected an upload with a wrong key from %s", client_ip())
         return fail("Invalid key.", 401)
-    try:                                           # clips are bigger than the normal 1 MB request limit
+    try:
         request.max_content_length = MAX_VIDEO_BYTES
     except AttributeError:
         pass
@@ -50,7 +51,6 @@ def _remote(cam_id):
 
 @bp.post("/heartbeat")
 def heartbeat():
-    """Live numbers every couple of seconds. The reply says which cameras someone is watching."""
     data = request.get_json(silent=True)
     reports = data.get("cameras") if isinstance(data, dict) and isinstance(data.get("cameras"), dict) else {}
     for cam_id, camera in workers.items():
@@ -89,8 +89,30 @@ def incident():
     jpeg = snapshot.read(MAX_SNAPSHOT_BYTES + 1) if snapshot else None
     if jpeg is not None and (len(jpeg) > MAX_SNAPSHOT_BYTES or not jpeg.startswith(b"\xff\xd8")):
         return fail("Invalid snapshot.", 400)
-    incident_id = footage.record_incident(cam_id, track_id, elapsed, jpeg, event,
-                                          created_at=created_at, client_ref=ref)
+    
+    if cfg.is_cloud():
+        # Bypass local storage save, create DB entry first
+        incident_id, _ = db.create_incident(cam_id, track_id, elapsed, event, 
+                                            created_at=created_at, client_ref=ref)
+        if jpeg:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                tmp.write(jpeg)
+                tmp_path = tmp.name
+                
+            try:
+                dest_name = f"incidents/{cam_id}/{incident_id}.jpg"
+                # Assuming your storage module uses this naming convention based on the video endpoint
+                cloud_path = storage.upload_incident_snapshot(tmp_path, dest_name)
+                if cloud_path:
+                    db.set_incident_media(incident_id, snapshot_path=cloud_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+    else:
+        # Standard local saving for the pool computer
+        incident_id = footage.record_incident(cam_id, track_id, elapsed, jpeg, event,
+                                              created_at=created_at, client_ref=ref)
+    
     return jsonify({"id": incident_id})
 
 
@@ -102,7 +124,25 @@ def video(incident_id):
     data = request.get_data()
     if not data:
         return fail("Empty video.", 400)
-    footage.store_video([incident_id], row["cam_id"], data, "video/mp4")
+    
+    if cfg.is_cloud():
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+            
+        try:
+            dest_name = f"incidents/{row['cam_id']}/{incident_id}.mp4"
+            cloud_path = storage.upload_incident_video(tmp_path, dest_name)
+            if cloud_path:
+                db.set_incident_media(incident_id, video_path=cloud_path, video_mime="video/mp4")
+            else:
+                return fail("Cloud storage upload failed.", 500)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    else:
+        footage.store_video([incident_id], row["cam_id"], data, "video/mp4")
+        
     return jsonify({"success": True})
 
 
