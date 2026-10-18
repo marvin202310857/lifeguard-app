@@ -1,10 +1,6 @@
-flask>=3.1
-werkzeug>=3.0
-requests>=2.31
-numpy>=1.26
-opencv-python>=4.8       # use opencv-python-headless on a server with no display (calibration needs the GUI build)
-ultralytics>=8.2         # YOLOv8 person detection + ByteTrack
-waitress>=3.0
-opencv-python-headless
-psycopg2-binary>=2.9.9
+flask>=3.0.0
+waitress>=3.0.0
+psycopg2-binary>=2.9.0
 supabase>=2.3.0
+requests>=2.31.0
+python-dotenv>=1.0.0
