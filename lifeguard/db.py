@@ -56,6 +56,8 @@ class DBProxy:
         self._last_insert_id = None
 
     def execute(self, query, params=()):
+        if params is None:
+            params = ()
         if self.is_pg:
             # Translate SQLite '?' to PostgreSQL '%s'
             query = query.replace("?", "%s")
@@ -144,7 +146,6 @@ def connect():
 
 def _add_column_if_missing(conn, table, column, definition):
     if conn.is_pg:
-        # PostgreSQL handled via central schema initialization script
         return 
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in existing:
@@ -157,8 +158,6 @@ def init_db():
     cfg.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with connect() as c:
         if c.is_pg:
-            # Cloud tables are managed by the Supabase SQL migration script. 
-            # We only ensure the admin exists.
             _ensure_admin_exists()
             return
 
@@ -361,30 +360,51 @@ def list_users():
 
 
 def approve_user(user_id):
+    user_id_str = str(user_id).strip()
     with connect() as c:
-        return c.execute("UPDATE users SET approved=1 WHERE id=?", (str(user_id),)).rowcount
+        if c.is_pg:
+            return c.execute("UPDATE users SET approved=1 WHERE id::text = ?", (user_id_str,)).rowcount
+        return c.execute("UPDATE users SET approved=1 WHERE id = ?", (user_id_str,)).rowcount
 
 
 def delete_user(user_id):
-    user_id = str(user_id)
+    user_id_str = str(user_id).strip()
     with connect() as c:
-        row = c.execute("SELECT username, role, approved FROM users WHERE id=?", (user_id,)).fetchone()
+        if c.is_pg:
+            row = c.execute("SELECT username, role, approved FROM users WHERE id::text=?", (user_id_str,)).fetchone()
+        else:
+            row = c.execute("SELECT username, role, approved FROM users WHERE id=?", (user_id_str,)).fetchone()
+            
         if not row:
             return False, "User not found."
         if row["role"] == "Administrator" and row["approved"]:
-            others = c.execute("SELECT COUNT(*) as count FROM users WHERE role='Administrator' "
-                               "AND approved=1 AND id<>?", (user_id,)).fetchone()["count"]
+            if c.is_pg:
+                others = c.execute("SELECT COUNT(*) as count FROM users WHERE role='Administrator' "
+                                   "AND approved=1 AND id::text<>?", (user_id_str,)).fetchone()["count"]
+            else:
+                others = c.execute("SELECT COUNT(*) as count FROM users WHERE role='Administrator' "
+                                   "AND approved=1 AND id<>?", (user_id_str,)).fetchone()["count"]
             if others == 0:
                 return False, "You can't remove the last administrator."
-        c.execute("DELETE FROM users WHERE id=?", (user_id,))
+                
+        if c.is_pg:
+            c.execute("DELETE FROM users WHERE id::text=?", (user_id_str,))
+        else:
+            c.execute("DELETE FROM users WHERE id=?", (user_id_str,))
+            
         c.execute(f"DELETE FROM login_throttle WHERE ({_get_throttle_account_sql(c.is_pg)}) = ? COLLATE NOCASE", (row["username"],))
     return True, row["username"]
 
 
 def set_password(user_id, password):
+    user_id_str = str(user_id).strip()
     with connect() as c:
-        c.execute("UPDATE users SET password_hash=? WHERE id=?",
-                  (generate_password_hash(password), str(user_id)))
+        if c.is_pg:
+            c.execute("UPDATE users SET password_hash=? WHERE id::text=?",
+                      (generate_password_hash(password), user_id_str))
+        else:
+            c.execute("UPDATE users SET password_hash=? WHERE id=?",
+                      (generate_password_hash(password), user_id_str))
 
 
 # ============================================================ passwords
@@ -541,8 +561,8 @@ def log_occupancy(camera_id, people_in_pool, people_poolside, submerged_count):
 _INCIDENT_COLUMNS = """
     id, cam_id, track_id, event, alert_level, elapsed_sec, status, created_at, started_at,
     resolved_at, video_state,
-    (snapshot_path IS NOT NULL OR snapshot IS NOT NULL) AS has_snapshot,
-    (video_path    IS NOT NULL OR video    IS NOT NULL) AS has_video"""
+    (snapshot_path IS NOT NULL) AS has_snapshot,
+    (video_path    IS NOT NULL) AS has_video"""
 
 
 def create_incident(cam_id, track_id, elapsed_sec, event="Drowning Risk Detected", alert_level="DANGER",
@@ -593,8 +613,6 @@ def set_incident_media(incident_id, snapshot_path=None, video_path=None, video_m
     if video_path:
         sets += ["video_path=?", "video_mime=?", "video_state='READY'"]
         args += [video_path, video_mime or "video/mp4"]
-    if clear_blobs:
-        sets += ["snapshot=NULL", "video=NULL"]
     if sets:
         with connect() as c:
             c.execute(f"UPDATE incidents SET {', '.join(sets)} WHERE id=?", (*args, int(incident_id)))
@@ -644,7 +662,7 @@ def get_incident_blob(incident_id, column):
         return None, None
     with connect() as c:
         if c.is_pg:
-            return None, None # PostgreSQL migration uses Storage exclusively
+            return None, None
         row = c.execute(f"SELECT {column} AS blob, video_mime FROM incidents WHERE id=?",
                         (int(incident_id),)).fetchone()
     if not row or row["blob"] is None:
@@ -682,7 +700,6 @@ def delete_incidents_through(day):
 def rename_media_folder(old_folder, new_folder):
     with connect() as c:
         if c.is_pg:
-            # PostgreSQL migration doesn't re-root bucket folders based on day files
             return
         for column in ("snapshot_path", "video_path"):
             c.execute(f"UPDATE incidents SET {column} = ? || substr({column}, ?) WHERE {column} LIKE ?",

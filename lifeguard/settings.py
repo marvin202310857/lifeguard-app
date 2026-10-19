@@ -14,13 +14,23 @@ DB_PATH = DATA_DIR / "lifeguard.db"
 MEDIA_DIR = DATA_DIR / "media"
 CONFIG_FILE = DATA_DIR / "config.json"
 
+# --- Footage Settings ---
+FOOTAGE_DIR = "footage"
+FOOTAGE_FOLDER_PREFIX = "AlertSaved-"
+FOOTAGE_FOLDER_DATE_FORMAT = "%m-%d-%y"
+DEFAULT_FOOTAGE_RETENTION_DAYS = 14
+
 # --- Default System Settings ---
 DEFAULT_WARN_SEC = 30
 DEFAULT_DANGER_SEC = 60
 DEFAULT_OCCUPANCY_INTERVAL_SEC = 5
-DEFAULT_FOOTAGE_RETENTION_DAYS = 14
 OCCUPANCY_RETENTION_DAYS = 30
 LOGIN_LOG_RETENTION_DAYS = 30
+
+# --- Default Camera Map ---
+CAMERAS = {
+    "cam1": "Main Pool Camera"
+}
 
 # --- Security Settings ---
 USERNAME_PATTERN = r"^[a-zA-Z0-9.\-_]{3,30}$"
