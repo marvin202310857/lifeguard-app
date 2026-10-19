@@ -27,11 +27,7 @@ def legacy_routes():
 @login_required
 def dashboard():
     user = current_user()
-    cameras_map = getattr(cfg, "CAMERAS", None)
-    if cameras_map is None:
-        cameras_map = {"cam1": "Main Pool Camera"}
-        
-    cameras = [{"id": cam_id, "name": name} for cam_id, name in cameras_map.items()]
+    cameras = [{"id": cam_id, "name": name} for cam_id, name in cfg.CAMERAS.items()]
     return render_template("dashboard.html", user=user, is_admin=is_admin(user), cameras=cameras)
 
 

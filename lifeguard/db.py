@@ -291,10 +291,10 @@ def _ensure_admin_exists():
     if not ok:
         with connect() as c:
             c.execute("UPDATE users SET role='Administrator', approved=1, password_hash=? "
-                      "WHERE username='admin' COLLATE NOCASE", (generate_password_hash(password),))
+                      "WHERE username='admin'", (generate_password_hash(password),))
     else:
         with connect() as c:
-            c.execute("UPDATE users SET approved=1 WHERE username='admin' COLLATE NOCASE")
+            c.execute("UPDATE users SET approved=1 WHERE username='admin'")
     banner = "=" * 62
     log.warning("\n%s\n First-run administrator created\n   username: admin\n   password: %s\n"
                 " Change it, or set LIFEGUARD_ADMIN_PASSWORD before first run.\n%s",
@@ -313,8 +313,12 @@ def register_user(username, password, role):
         role = "User"
 
     with connect() as c:
-        if c.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone():
-            return False, "Username already taken."
+        if c.is_pg:
+            if c.execute("SELECT 1 FROM users WHERE LOWER(username)=LOWER(?)", (username,)).fetchone():
+                return False, "Username already taken."
+        else:
+            if c.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone():
+                return False, "Username already taken."
         c.execute(
             "INSERT INTO users (id, username, password_hash, role, approved, created_at) "
             "VALUES (?, ?, ?, ?, 0, ?)",
@@ -323,9 +327,12 @@ def register_user(username, password, role):
 
 
 def get_user(username):
+    user_str = (username or "").strip()
     with connect() as c:
-        row = c.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE",
-                        ((username or "").strip(),)).fetchone()
+        if c.is_pg:
+            row = c.execute("SELECT * FROM users WHERE LOWER(username)=LOWER(?)", (user_str,)).fetchone()
+        else:
+            row = c.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (user_str,)).fetchone()
     if not row:
         return None
     user = dict(row)
@@ -335,17 +342,32 @@ def get_user(username):
 
 def list_users():
     with connect() as c:
-        sql = f"""
-            SELECT u.id, u.username, u.role, u.approved, u.created_at,
-                   COALESCE(t.failed_attempts, 0) AS failed_attempts,
-                   COALESCE(t.locked_until, 0)    AS locked_until
-            FROM users u
-            LEFT JOIN (
-                SELECT {_get_throttle_account_sql(c.is_pg)} AS account,
-                       MAX(failed_attempts) AS failed_attempts, MAX(locked_until) AS locked_until
-                FROM login_throttle WHERE username NOT LIKE '@ip|%' GROUP BY account
-            ) t ON t.account = u.username COLLATE NOCASE
-            ORDER BY u.approved ASC, u.created_at DESC"""
+        if c.is_pg:
+            sql = """
+                SELECT u.id, u.username, u.role, u.approved, u.created_at,
+                       COALESCE(t.failed_attempts, 0) AS failed_attempts,
+                       COALESCE(t.locked_until, 0)    AS locked_until
+                FROM users u
+                LEFT JOIN (
+                    SELECT CASE WHEN strpos(username, '|') > 0 
+                                THEN substring(username from 1 for strpos(username, '|') - 1) 
+                                ELSE username END AS account,
+                           MAX(failed_attempts) AS failed_attempts, MAX(locked_until) AS locked_until
+                    FROM login_throttle WHERE username NOT LIKE '@ip|%' GROUP BY account
+                ) t ON LOWER(t.account) = LOWER(u.username)
+                ORDER BY u.approved ASC, u.created_at DESC"""
+        else:
+            sql = f"""
+                SELECT u.id, u.username, u.role, u.approved, u.created_at,
+                       COALESCE(t.failed_attempts, 0) AS failed_attempts,
+                       COALESCE(t.locked_until, 0)    AS locked_until
+                FROM users u
+                LEFT JOIN (
+                    SELECT {_get_throttle_account_sql(False)} AS account,
+                           MAX(failed_attempts) AS failed_attempts, MAX(locked_until) AS locked_until
+                    FROM login_throttle WHERE username NOT LIKE '@ip|%' GROUP BY account
+                ) t ON t.account = u.username COLLATE NOCASE
+                ORDER BY u.approved ASC, u.created_at DESC"""
         rows = c.execute(sql).fetchall()
     now = time.time()
     users = []
@@ -392,7 +414,10 @@ def delete_user(user_id):
         else:
             c.execute("DELETE FROM users WHERE id=?", (user_id_str,))
             
-        c.execute(f"DELETE FROM login_throttle WHERE ({_get_throttle_account_sql(c.is_pg)}) = ? COLLATE NOCASE", (row["username"],))
+        if c.is_pg:
+            c.execute(f"DELETE FROM login_throttle WHERE LOWER({_get_throttle_account_sql(True)}) = LOWER(?)", (row["username"],))
+        else:
+            c.execute(f"DELETE FROM login_throttle WHERE ({_get_throttle_account_sql(False)}) = ? COLLATE NOCASE", (row["username"],))
     return True, row["username"]
 
 
@@ -483,9 +508,14 @@ def reset_throttle(key):
 
 
 def clear_account_throttle(username):
+    user_str = (username or "").strip()
     with connect() as c:
-        c.execute(f"DELETE FROM login_throttle WHERE username NOT LIKE '@ip|%' "
-                  f"AND ({_get_throttle_account_sql(c.is_pg)}) = ? COLLATE NOCASE", ((username or "").strip(),))
+        if c.is_pg:
+            c.execute(f"DELETE FROM login_throttle WHERE username NOT LIKE '@ip|%' "
+                      f"AND LOWER({_get_throttle_account_sql(True)}) = LOWER(?)", (user_str,))
+        else:
+            c.execute(f"DELETE FROM login_throttle WHERE username NOT LIKE '@ip|%' "
+                      f"AND ({_get_throttle_account_sql(False)}) = ? COLLATE NOCASE", (user_str,))
 
 
 # ============================================================ logs & alerts
@@ -798,4 +828,3 @@ def compact():
     with connect() as c:
         if not c.is_pg:
             c.execute("VACUUM")
-# Force sync trigger
