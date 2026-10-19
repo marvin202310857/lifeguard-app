@@ -65,7 +65,7 @@ def create_app(start_cameras=True, start_maintenance=True):
             return jsonify({"success": False, "message": error.description}), error.code
         return error
 
-    if start_maintenance:
+    if start_maintenance and hasattr(footage, "start_maintenance"):
         footage.start_maintenance()       # daily folders + 14-day cleanup
     if start_cameras:
         from .vision.worker import start_workers
