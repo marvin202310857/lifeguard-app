@@ -349,11 +349,12 @@ def list_users():
                        COALESCE(t.locked_until, 0)    AS locked_until
                 FROM users u
                 LEFT JOIN (
-                    SELECT CASE WHEN strpos(username, '|') > 0 
-                                THEN substring(username from 1 for strpos(username, '|') - 1) 
-                                ELSE username END AS account,
-                           MAX(failed_attempts) AS failed_attempts, MAX(locked_until) AS locked_until
-                    FROM login_throttle WHERE username NOT LIKE '@ip|%' GROUP BY account
+                    SELECT username AS account,
+                           MAX(failed_attempts) AS failed_attempts, 
+                           MAX(locked_until) AS locked_until
+                    FROM login_throttle 
+                    WHERE username NOT LIKE '@ip|%' 
+                    GROUP BY username
                 ) t ON LOWER(t.account) = LOWER(u.username)
                 ORDER BY u.approved ASC, u.created_at DESC"""
         else:
@@ -373,7 +374,13 @@ def list_users():
     users = []
     for row in rows:
         d = dict(row)
-        left = float(d.pop("locked_until") or 0) - now
+        d["id"] = str(d["id"])
+        try:
+            locked_val = float(d.pop("locked_until") or 0)
+        except (ValueError, TypeError):
+            locked_val = 0.0
+            
+        left = locked_val - now
         d["approved"] = bool(d["approved"])
         d["locked"] = left > 0
         d["locked_seconds_left"] = max(0, int(left))

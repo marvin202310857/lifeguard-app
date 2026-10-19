@@ -27,9 +27,10 @@ DEFAULT_OCCUPANCY_INTERVAL_SEC = 5
 OCCUPANCY_RETENTION_DAYS = 30
 LOGIN_LOG_RETENTION_DAYS = 30
 
-# --- Default Camera Map ---
+# --- Camera Configuration ---
 CAMERAS = {
-    "cam1": "Main Pool Camera"
+    "cam1": "Main Pool Camera",
+    "cam2": "Secondary Pool Camera",
 }
 
 # --- Security Settings ---
