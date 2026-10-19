@@ -1,10 +1,13 @@
 """Cloud side of the split deployment: cameras are remote, fed by the pool computer."""
+import logging
 import threading
 import time
 
 from . import registry
 from . import settings as cfg
 from ._offline_frame import OFFLINE_JPEG
+
+log = logging.getLogger("lifeguard.cloud")
 
 LEVELS = ("SAFE", "WARNING", "DANGER", "OFFLINE")
 EMPTY = {"people_in_pool": 0, "people_outside_pool": 0, "submerged_count": 0, "status": "OFFLINE",
@@ -19,7 +22,8 @@ class RemoteCamera:
 
     def __init__(self, cam_id):
         self.cam_id = cam_id
-        self.label = cfg.CAMERAS[cam_id]
+        cameras_map = getattr(cfg, "CAMERAS", {}) or {}
+        self.label = cameras_map.get(cam_id, f"Camera {cam_id}")
         self._cond = threading.Condition()
         self._latest, self._latest_seq = OFFLINE_JPEG, 1
         self._reported, self._alerts = None, []
@@ -84,5 +88,10 @@ class RemoteCamera:
 
 
 def register_cameras():
-    for cam_id in cfg.CAMERAS:
+    cameras_map = getattr(cfg, "CAMERAS", None)
+    if cameras_map is None:
+        # Fallback default cameras if settings doesn't explicitly define CAMERAS
+        cameras_map = {"cam1": "Main Pool Camera"}
+        
+    for cam_id in cameras_map:
         registry.workers.setdefault(cam_id, RemoteCamera(cam_id))
