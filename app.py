@@ -1,16 +1,24 @@
 """Application factory."""
 import logging
-
 from pathlib import Path
 
 from flask import Flask, jsonify, request, url_for
+from flask.sessions import SecureCookieSessionInterface
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.exceptions import HTTPException
 
-from . import __version__, admin, auth, db, footage, live, pages
+from . import __version__, admin, auth, db, footage, ingest, live, pages
 from . import settings as cfg
 
 CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
        "style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+
+
+class HttpsAwareSessions(SecureCookieSessionInterface):
+    """Login cookie is marked Secure whenever the visitor is on HTTPS."""
+
+    def get_cookie_secure(self, app):
+        return request.is_secure
 
 
 def configure_logging():
@@ -31,8 +39,12 @@ def create_app(start_cameras=True, start_maintenance=True):
         MAX_CONTENT_LENGTH=1024 * 1024,
     )
 
+    app.session_interface = HttpsAwareSessions()
+    if auth.proxy_enabled():                    # behind cloudflared / nginx / render proxy
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
     db.init_db()
-    for module in (pages, auth, admin, live):
+    for module in (pages, auth, admin, live, ingest):
         app.register_blueprint(module.bp)
 
     static_dir = Path(app.static_folder)
@@ -55,6 +67,8 @@ def create_app(start_cameras=True, start_maintenance=True):
         response.headers.setdefault("Content-Security-Policy", CSP)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")
+        if request.is_secure:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=15552000")
         if request.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -66,8 +80,13 @@ def create_app(start_cameras=True, start_maintenance=True):
         return error
 
     if start_maintenance and hasattr(footage, "start_maintenance"):
-        footage.start_maintenance()       # daily folders + 14-day cleanup
-    if start_cameras:
+        footage.start_maintenance()       # daily folders + retention cleanup
+    if getattr(cfg, "is_cloud", lambda: False)():   # Render mode
+        from . import cloud
+        cloud.register_cameras()
+    elif start_cameras:                   # Local pool computer mode
+        from . import uplink
         from .vision.worker import start_workers
         start_workers()
+        uplink.start()                    # sends live status + alerts to cloud
     return app
