@@ -19,6 +19,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -30,6 +31,34 @@ log = logging.getLogger("lifeguard.footage")
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MAINTENANCE_INTERVAL_SEC = 300
 DEFAULT_MIME = {"snapshot": "image/jpeg", "video": "video/mp4"}
+
+
+# ------------------------------------------------------------------ maintenance
+def start_maintenance():
+    """Start background disk retention cleanup thread if not running in cloud mode."""
+    if cfg.is_cloud():
+        log.info("Cloud mode active: bypassing local disk maintenance.")
+        return
+    log.info("Starting background footage retention maintenance thread.")
+    t = threading.Thread(target=_maintenance_loop, daemon=True)
+    t.start()
+
+
+def _maintenance_loop():
+    while True:
+        try:
+            now = today()
+            keep = retention_days()
+            base = root()
+            if base.is_dir():
+                for entry in os.scandir(base):
+                    folder_day = entry.is_dir() and folder_date(entry.name)
+                    if folder_day and (now - folder_day).days >= keep:
+                        log.info("Cleaning up expired local footage folder: %s", entry.name)
+                        shutil.rmtree(entry.path, ignore_errors=True)
+        except Exception as exc:
+            log.warning("Footage maintenance error: %s", exc)
+        time.sleep(MAINTENANCE_INTERVAL_SEC)
 
 
 # ------------------------------------------------------------------ helpers
@@ -175,8 +204,6 @@ def store_video(incident_ids, cam_id, video, mime="video/mp4"):
     
     try:
         if cfg.is_cloud():
-            # In cloud mode, ingest.py handles the direct video upload. 
-            # This is a fallback if called internally.
             path = f"incidents/{cam_id}/incident_{first['id']}_{clock}.mp4"
         else:
             path = _save(day, f"incident_{first['id']}_{cam_id}_{clock}.mp4", video)
@@ -190,7 +217,7 @@ def store_video(incident_ids, cam_id, video, mime="video/mp4"):
 
 
 def open_media(incident_id, kind):
-    """-> ("file", Path, mime) | ("cloud", path, mime) | ("blob", bytes, mime) | None   (kind: 'snapshot' or 'video')"""
+    """-> ("file", Path, mime) | ("cloud", path, mime) | ("blob", bytes, mime) | None"""
     row = db.get_incident(incident_id)
     if not row:
         return None
@@ -211,10 +238,8 @@ def open_media(incident_id, kind):
 
 
 def delete_incident(incident_id):
-    """Delete the incident and its files (a shared clip is kept until its last incident is gone)."""
-    # Grab row before deleting to get paths
+    """Delete the incident and its files."""
     row = db.get_incident(incident_id)
-    
     deleted, paths = db.delete_incident(incident_id)
     
     if not cfg.is_cloud():
@@ -222,13 +247,9 @@ def delete_incident(incident_id):
             if not db.media_path_in_use(relative):
                 _unlink(relative)
     else:
-        # Delete from Supabase bucket if paths are no longer in use
         if row and deleted:
             try:
-                paths_to_delete = []
-                for p in paths:
-                    if not db.media_path_in_use(p):
-                        paths_to_delete.append(p)
+                paths_to_delete = [p for p in paths if not db.media_path_in_use(p)]
                 if paths_to_delete:
                     supabase = storage._get_client()
                     supabase.storage.from_(storage.BUCKET_NAME).remove(paths_to_delete)
@@ -245,7 +266,6 @@ def folder_stats():
     counts = db.incident_counts_by_day()
     
     if cfg.is_cloud():
-        # Skip local file scanning on ephemeral disk environments
         days = set(counts) | {now.isoformat()}
         folders = []
         for day in days:

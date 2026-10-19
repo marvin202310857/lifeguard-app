@@ -1,6 +1,5 @@
 """Application factory."""
 import logging
-
 from pathlib import Path
 
 from flask import Flask, jsonify, request, url_for
@@ -16,8 +15,7 @@ CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; 
 
 
 class HttpsAwareSessions(SecureCookieSessionInterface):
-    """Login cookie is marked Secure whenever the visitor is on HTTPS - on the internet it is, on the
-    local network (plain http) it isn't, so both keep working."""
+    """Login cookie is marked Secure whenever the visitor is on HTTPS."""
 
     def get_cookie_secure(self, app):
         return request.is_secure
@@ -42,7 +40,7 @@ def create_app(start_cameras=True, start_maintenance=True):
     )
 
     app.session_interface = HttpsAwareSessions()
-    if auth.proxy_enabled():                    # behind cloudflared / nginx: trust its https + host headers
+    if auth.proxy_enabled():                    # behind cloudflared / nginx / render proxy
         app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
     db.init_db()
@@ -81,14 +79,14 @@ def create_app(start_cameras=True, start_maintenance=True):
             return jsonify({"success": False, "message": error.description}), error.code
         return error
 
-    if start_maintenance:
-        footage.start_maintenance()       # daily folders + 14-day cleanup
-    if cfg.is_cloud():                          # Render: cameras are remote, fed by the pool computer
+    if start_maintenance and hasattr(footage, "start_maintenance"):
+        footage.start_maintenance()       # daily folders + retention cleanup
+    if getattr(cfg, "is_cloud", lambda: False)():   # Render mode
         from . import cloud
         cloud.register_cameras()
-    elif start_cameras:
+    elif start_cameras:                   # Local pool computer mode
         from . import uplink
         from .vision.worker import start_workers
         start_workers()
-        uplink.start()                          # send live status + alerts to the cloud, if configured
+        uplink.start()                    # sends live status + alerts to cloud
     return app
