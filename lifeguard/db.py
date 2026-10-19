@@ -353,7 +353,7 @@ def list_users():
                            MAX(failed_attempts) AS failed_attempts, 
                            MAX(locked_until) AS locked_until
                     FROM login_throttle 
-                    WHERE username NOT LIKE '@ip|%' 
+                    WHERE username NOT LIKE '@ip|%%' 
                     GROUP BY username
                 ) t ON LOWER(t.account) = LOWER(u.username)
                 ORDER BY u.approved ASC, u.created_at DESC"""
@@ -414,7 +414,7 @@ def delete_user(user_id):
                 others = c.execute("SELECT COUNT(*) as count FROM users WHERE role='Administrator' "
                                    "AND approved=1 AND id<>?", (user_id_str,)).fetchone()["count"]
             if others == 0:
-                return False, "You can't remove the last administrator."
+                return False, "You can'remove the last administrator."
                 
         if c.is_pg:
             c.execute("DELETE FROM users WHERE id::text=?", (user_id_str,))
@@ -518,7 +518,7 @@ def clear_account_throttle(username):
     user_str = (username or "").strip()
     with connect() as c:
         if c.is_pg:
-            c.execute(f"DELETE FROM login_throttle WHERE username NOT LIKE '@ip|%' "
+            c.execute(f"DELETE FROM login_throttle WHERE username NOT LIKE '@ip|%%' "
                       f"AND LOWER({_get_throttle_account_sql(True)}) = LOWER(?)", (user_str,))
         else:
             c.execute(f"DELETE FROM login_throttle WHERE username NOT LIKE '@ip|%' "
@@ -676,7 +676,7 @@ def list_incidents_for_day(day):
     with connect() as c:
         if c.is_pg:
             rows = c.execute(f"SELECT {_INCIDENT_COLUMNS} FROM incidents "
-                             "WHERE CAST(created_at AS TEXT) LIKE ? || '%' ORDER BY id DESC", (day,)).fetchall()
+                             "WHERE CAST(created_at AS TEXT) LIKE ? || '%%' ORDER BY id DESC", (day,)).fetchall()
         else:
             rows = c.execute(f"SELECT {_INCIDENT_COLUMNS} FROM incidents "
                              "WHERE substr(created_at, 1, 10) = ? ORDER BY id DESC", (day,)).fetchall()
