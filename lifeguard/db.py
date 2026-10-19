@@ -798,3 +798,4 @@ def compact():
     with connect() as c:
         if not c.is_pg:
             c.execute("VACUUM")
+# Force sync trigger
