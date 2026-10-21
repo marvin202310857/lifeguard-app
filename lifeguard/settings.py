@@ -28,9 +28,11 @@ OCCUPANCY_RETENTION_DAYS = 30
 LOGIN_LOG_RETENTION_DAYS = 30
 
 # --- Camera Configuration ---
+# Add or modify cameras here. The keys ("cam1", "cam2", etc.) match the ESP32 CAMERA_ID.
 CAMERAS = {
     "cam1": "Main Pool Camera",
     "cam2": "Secondary Pool Camera",
+    "cam3": "Deep End Camera",
 }
 
 # --- Security Settings ---
@@ -85,7 +87,7 @@ def set_config_value(key, value):
         _cache["mtime"] = None
 
 
-# --- cloud uplink settings --------------------------------------------------
+# --- Cloud Uplink Settings ---
 def cloud_settings():
     """Return normalized cloud uplink settings, or None if credentials are absent."""
     config = load_config()
