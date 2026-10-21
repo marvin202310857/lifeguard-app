@@ -414,7 +414,7 @@ def delete_user(user_id):
                 others = c.execute("SELECT COUNT(*) as count FROM users WHERE role='Administrator' "
                                    "AND approved=1 AND id<>?", (user_id_str,)).fetchone()["count"]
             if others == 0:
-                return False, "You can'remove the last administrator."
+                return False, "You can't remove the last administrator."
                 
         if c.is_pg:
             c.execute("DELETE FROM users WHERE id::text=?", (user_id_str,))

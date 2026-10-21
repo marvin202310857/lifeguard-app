@@ -1,4 +1,4 @@
-"""Administrator API: accounts, activity log, security alerts and incident footage."""
+"""Administrator API: accounts, activity log, security alerts, incident footage, and occupancy telemetry."""
 from io import BytesIO
 
 from flask import Blueprint, jsonify, request, send_file, redirect
@@ -7,6 +7,40 @@ from . import db, footage, storage
 from .auth import admin_required, client_ip, current_user, fail, json_body
 
 bp = Blueprint("admin", __name__, url_prefix="/api")
+
+
+# ----------------------------------------------------------------- telemetry & occupancy
+@bp.post("/occupancy")
+def receive_occupancy():
+    """Public endpoint to receive telemetry & ROI metrics from ESP32 or local CV pipeline."""
+    data = request.get_json(silent=True) or {}
+    cam_id = str(data.get("camera_id", "cam1")).strip()
+    in_pool = int(data.get("people_in_pool", 0))
+    poolside = int(data.get("people_poolside", 0))
+    submerged = int(data.get("submerged_count", 0))
+
+    db.log_occupancy(cam_id, in_pool, poolside, submerged)
+    return jsonify({"status": "ok", "camera_id": cam_id}), 200
+
+
+@bp.get("/occupancy")
+def get_occupancy():
+    """Retrieve the latest telemetry and occupancy metrics for dashboard updates."""
+    with db.connect() as c:
+        row = c.execute(
+            "SELECT camera_id, people_in_pool, people_poolside, submerged_count, timestamp "
+            "FROM occupancy_logs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    if not row:
+        return jsonify({
+            "camera_id": "cam1",
+            "people_in_pool": 0,
+            "people_poolside": 0,
+            "submerged_count": 0,
+            "timestamp": db.now_str()
+        })
+    return jsonify(dict(row))
 
 
 # ----------------------------------------------------------------- accounts
@@ -87,7 +121,6 @@ def _serve_media(incident_id, kind):
     source, data, mime = media
     
     if source == "cloud":
-        # 'data' contains the relative storage path in the cloud bucket
         secure_url = storage.get_secure_video_url(data)
         if secure_url:
             return redirect(secure_url)
@@ -121,7 +154,6 @@ def delete_incident(incident_id):
 @bp.get("/footage")
 @admin_required
 def footage_overview():
-    """Daily folders still inside the retention window, with sizes and days left."""
     return jsonify(footage.folder_stats())
 
 
