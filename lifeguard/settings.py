@@ -28,11 +28,10 @@ OCCUPANCY_RETENTION_DAYS = 30
 LOGIN_LOG_RETENTION_DAYS = 30
 
 # --- Camera Configuration ---
-# Add or modify cameras here. The keys ("cam1", "cam2", etc.) match the ESP32 CAMERA_ID.
+# Configured for exactly 2 camera containers
 CAMERAS = {
     "cam1": "Main Pool Camera",
     "cam2": "Secondary Pool Camera",
-    "cam3": "Deep End Camera",
 }
 
 # --- Security Settings ---

@@ -36,9 +36,11 @@
     <article class="cam" data-cam="{{ cam.id }}" data-name="{{ cam.name }}">
       <header class="cam-head">
         <h2>{{ cam.name }}</h2>
-        <span class="chip chip-offline" data-role="chip">Offline</span>
+        <span class="chip chip-online" data-role="chip">Active</span>
       </header>
-      <div class="cam-view"><img src="/{{ cam.id }}_feed" alt="Live view from {{ cam.name }}"></div>
+      <div class="cam-view">
+        <img src="/api/{{ cam.id }}_feed" alt="Live CV process view from {{ cam.name }}" style="width: 100%; height: auto; display: block;" />
+      </div>
       <footer class="cam-foot">
         <span>In pool <strong data-role="in">0</strong></span>
         <span>Poolside <strong data-role="out">0</strong></span>
