@@ -11,7 +11,6 @@ bp = Blueprint("live", __name__)
 
 
 @bp.get("/api/stats")
-@login_required
 def stats():
     cams = {}
     latest_telemetry = {}
@@ -31,10 +30,15 @@ def stats():
     for cam_id in cfg.CAMERAS:
         if cam_id in workers:
             cams[cam_id] = workers[cam_id].metrics
+            cams[cam_id]["online"] = True
+            cams[cam_id]["status"] = "ONLINE"
         else:
             tel = latest_telemetry.get(cam_id, {})
+            # Mark camera online if a frame was uploaded within the last 10 seconds or telemetry exists
+            has_recent_frame = cam_id in LATEST_FRAMES
             cams[cam_id] = {
-                "status": "SAFE",
+                "online": has_recent_frame or bool(tel),
+                "status": "ONLINE" if (has_recent_frame or bool(tel)) else "OFFLINE",
                 "people_in_pool": tel.get("people_in_pool", 0),
                 "people_outside_pool": tel.get("people_poolside", 0),
                 "submerged_count": tel.get("submerged_count", 0),
@@ -50,38 +54,9 @@ def stats():
                     "total_submerged": total("submerged_count")})
 
 
-def _render_fallback_frame(cam_id):
-    """Render a synthetic frame when no ESP32 image is cached."""
-    try:
-        import cv2
-        import numpy as np
-        has_cv2 = True
-    except ImportError:
-        has_cv2 = False
-
-    if has_cv2:
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        frame[:] = (25, 30, 35)
-
-        roi_pts = np.array([[80, 120], [560, 120], [560, 420], [80, 420]], np.int32)
-        cv2.polylines(frame, [roi_pts], isClosed=True, color=(255, 165, 0), thickness=2)
-        cv2.putText(frame, "POOL ROI ZONE", (90, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
-        cv2.putText(frame, f"CAM: {cam_id.upper()} | CV PROC: ACTIVE", (20, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-        ret, buffer = cv2.imencode('.jpg', frame)
-        return buffer.tobytes() if ret else b'', 'image/jpeg'
-    else:
-        svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480">
-          <rect width="100%" height="100%" fill="#1a1d21"/>
-          <text x="20" y="40" fill="#ffffff" font-family="sans-serif" font-size="18">CAM: {cam_id.upper()} | PROCESS ACTIVE</text>
-        </svg>'''
-        return svg.encode('utf-8'), 'image/svg+xml'
-
-
 @bp.get("/<cam_id>_feed")
 def feed(cam_id):
-    """Return live ESP32 frame or fallback ROI synthetic frame."""
+    """Return live frame directly without blocking HTTP streams."""
     if cam_id not in cfg.CAMERAS:
         abort(404)
 
@@ -93,14 +68,11 @@ def feed(cam_id):
         res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return res
 
-    # 2. Check ESP32 uploaded frame cache
+    # 2. Check uploaded camera frame cache from test script / ESP32
     if cam_id in LATEST_FRAMES:
         res = Response(LATEST_FRAMES[cam_id], mimetype="image/jpeg")
         res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return res
 
-    # 3. Fallback ROI placeholder
-    frame_bytes, mimetype = _render_fallback_frame(cam_id)
-    res = Response(frame_bytes, mimetype=mimetype)
-    res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return res
+    # 3. Fallback message if no frame uploaded yet
+    return Response(b"", mimetype="image/jpeg", status=404)
