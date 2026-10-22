@@ -17,46 +17,57 @@ def live_feed(cam_id):
     try:
         import cv2
         import numpy as np
+        has_cv2 = True
     except ImportError:
-        return "OpenCV required for computer vision processing output", 500
+        has_cv2 = False
 
     def generate_frames():
         while True:
-            # Create process output canvas (640x480 frame)
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            frame[:] = (25, 30, 35) # Dark gray container background
+            if has_cv2:
+                # Create process output canvas (640x480 frame)
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                frame[:] = (25, 30, 35) # Dark canvas
 
-            # Fetch latest telemetry values from database
-            latest = get_occupancy().get_json() or {}
-            in_pool = latest.get("people_in_pool", 0)
-            poolside = latest.get("people_poolside", 0)
+                # Fetch latest telemetry values from database
+                latest = get_occupancy().get_json() or {}
+                in_pool = latest.get("people_in_pool", 0)
+                poolside = latest.get("people_poolside", 0)
 
-            # 1. Draw Pool ROI (Region of Interest Boundary)
-            roi_points = np.array([[80, 120], [560, 120], [560, 420], [80, 420]], np.int32)
-            cv2.polylines(frame, [roi_points], isClosed=True, color=(255, 165, 0), thickness=2)
-            cv2.putText(frame, "POOL ROI ZONE", (90, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+                # 1. Draw Pool ROI (Region of Interest Boundary)
+                roi_points = np.array([[80, 120], [560, 120], [560, 420], [80, 420]], np.int32)
+                cv2.polylines(frame, [roi_points], isClosed=True, color=(255, 165, 0), thickness=2)
+                cv2.putText(frame, "POOL ROI ZONE", (90, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
 
-            # 2. Draw Simulated Person Detection Boxes
-            if in_pool > 0:
-                cv2.rectangle(frame, (180, 180), (260, 340), (0, 255, 0), 2)
-                cv2.putText(frame, "Person: In Pool", (180, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            if poolside > 0:
-                cv2.rectangle(frame, (20, 200), (70, 320), (0, 215, 255), 2)
-                cv2.putText(frame, "Person: Poolside", (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 215, 255), 1)
+                # 2. Draw Simulated Person Detection Boxes
+                if in_pool > 0:
+                    cv2.rectangle(frame, (180, 180), (260, 340), (0, 255, 0), 2)
+                    cv2.putText(frame, "Person: In Pool", (180, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                if poolside > 0:
+                    cv2.rectangle(frame, (20, 200), (70, 320), (0, 215, 255), 2)
+                    cv2.putText(frame, "Person: Poolside", (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 215, 255), 1)
 
-            # 3. Draw On-Screen Process Summary
-            cv2.putText(frame, f"CAM: {cam_id.upper()} | CV PROC: ACTIVE", (20, 35),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(frame, f"IN POOL: {in_pool} | POOLSIDE: {poolside}", (20, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                # 3. Draw On-Screen Process Summary
+                cv2.putText(frame, f"CAM: {cam_id.upper()} | CV PROC: ACTIVE", (20, 35),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(frame, f"IN POOL: {in_pool} | POOLSIDE: {poolside}", (20, 65),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-            ret, buffer = cv2.imencode('.jpg', frame)
-            if not ret:
-                continue
+                ret, buffer = cv2.imencode('.jpg', frame)
+                frame_bytes = buffer.tobytes() if ret else b''
+            else:
+                # Lightweight SVG placeholder if OpenCV is not installed
+                svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480">
+                  <rect width="100%" height="100%" fill="#1a1d21"/>
+                  <rect x="80" y="120" width="480" height="300" fill="none" stroke="#ffa500" stroke-width="2"/>
+                  <text x="90" y="110" fill="#ffa500" font-family="sans-serif" font-size="16">POOL ROI ZONE</text>
+                  <text x="20" y="40" fill="#ffffff" font-family="sans-serif" font-size="18">CAM: {cam_id.upper()} | PROCESS ACTIVE</text>
+                </svg>'''
+                frame_bytes = svg.encode('utf-8')
 
+            content_type = 'image/jpeg' if has_cv2 else 'image/svg+xml'
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            time.sleep(0.1)  # ~10 FPS
+                   b'Content-Type: ' + content_type.encode('utf-8') + b'\r\n\r\n' + frame_bytes + b'\r\n')
+            time.sleep(0.2)
 
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
