@@ -59,7 +59,7 @@ def alerts():
 
 
 def _generate_frame(cam_id):
-    """Generate a single JPEG frame for non-blocking stream requests."""
+    """Generate a single JPEG or SVG frame for non-blocking stream requests."""
     try:
         import cv2
         import numpy as np
@@ -114,15 +114,17 @@ def _generate_frame(cam_id):
 def feed(cam_id):
     if cam_id not in cfg.CAMERAS:
         abort(404)
-        
+
     worker = workers.get(cam_id)
     if worker is not None:
-        last = -1
-        jpg, _ = worker.wait_frame(last)
-        return Response(jpg, mimetype="image/jpeg")
+        jpg, _ = worker.wait_frame(-1)
+        res = Response(jpg, mimetype="image/jpeg")
+    else:
+        frame_bytes, mimetype = _generate_frame(cam_id)
+        res = Response(frame_bytes, mimetype=mimetype)
 
-    frame_bytes, mimetype = _generate_frame(cam_id)
-    return Response(frame_bytes, mimetype=mimetype)
+    res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return res
 
 
 def _clean_polygon(raw):

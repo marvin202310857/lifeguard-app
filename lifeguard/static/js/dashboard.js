@@ -2,8 +2,7 @@
 (() => {
   'use strict';
   const { esc, api, toast } = window.LG;
-  const $ = (selector, root = document) => root.querySelector(selector);
-  const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const $ = (selector, root = document) => root.querySelector(selector); const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
   const IS_ADMIN = document.body.dataset.admin === 'true';
   const ME = (document.body.dataset.user || '').toLowerCase();
@@ -11,7 +10,6 @@
   const ADMIN_POLL_MS = 10000;
 
   // ---------------------------------------------------------------- helpers
-  /** Only touch the DOM when the markup changed, so images and focus aren't reset every poll. */
   const rendered = new WeakMap();
   function render(el, html) {
     if (rendered.get(el) !== html) {
@@ -20,7 +18,6 @@
     }
   }
 
-  /** Run fn now and every `ms`, skipping ticks while the tab is hidden or the last run is still going. */
   function poll(fn, ms) {
     let busy = false;
     const tick = async () => {
@@ -105,7 +102,6 @@
 
     function stop() { clearInterval(timer); timer = null; }
 
-    /** Call with true while a drowning alert is showing. */
     function update(active) {
       if (enabled && active && !timer) { beep(); timer = setInterval(beep, 1500); }
       else if (!(enabled && active)) stop();
@@ -114,7 +110,6 @@
     toggle.addEventListener('click', () => set(!enabled));
     enabled = stored();
     paint();
-    // Browsers only allow audio after a user gesture; unlock on the first interaction.
     if (enabled) {
       const unlock = () => ensureAudio();
       document.addEventListener('pointerdown', unlock, { once: true });
@@ -124,8 +119,7 @@
   })();
 
   // ------------------------------------------------------- live status + cams
-  const panel = $('#status-panel');
-  const cameras = $$('[data-cam]').map((el) => ({
+  const panel = $('#status-panel'); const cameras = $$('[data-cam]').map((el) => ({
     id: el.dataset.cam,
     name: el.dataset.name,
     chip: $('[data-role="chip"]', el),
@@ -198,34 +192,22 @@
   }
 
   // ---------------------------------------------------------- live video feeds
-  // A video <img> never reconnects on its own. Reload it when it drops (server restart,
-  // brief network loss) and release it while this tab is hidden, because browsers allow
-  // only ~6 connections per address across all tabs and each feed holds one open.
-  const feeds = $$('.cam-view img').map((img) => ({ img, url: img.getAttribute('src'), timer: null }));
+  const feedImages = $$('.cam-view img');
 
-  function connectFeed(feed) {
-    clearTimeout(feed.timer);
+  function updateFeeds() {
     if (document.hidden) return;
-    feed.img.src = `${feed.url}?t=${Date.now()}`;      // fresh URL forces a new connection
-  }
-
-  for (const feed of feeds) {
-    feed.img.addEventListener('error', () => {
-      clearTimeout(feed.timer);
-      feed.timer = setTimeout(() => connectFeed(feed), 3000);
-    });
-  }
-
-  document.addEventListener('visibilitychange', () => {
-    for (const feed of feeds) {
-      if (document.hidden) {
-        clearTimeout(feed.timer);
-        feed.img.removeAttribute('src');
-      } else {
-        connectFeed(feed);
+    const now = Date.now();
+    for (const img of feedImages) {
+      const baseUrl = (img.dataset.url || img.getAttribute('src') || '').split('?')[0];
+      if (baseUrl) {
+        img.dataset.url = baseUrl;
+        img.src = `${baseUrl}?t=${now}`;
       }
     }
-  });
+  }
+
+  // Refresh feeds every 1 second
+  setInterval(updateFeeds, 1000);
 
   poll(refreshStatus, STATUS_POLL_MS);
   if (!IS_ADMIN) return;
@@ -252,7 +234,6 @@
   });
 
   // ------------------------------------------------------ admin: panels
-  /** Placeholder row (tables) or paragraph (grids) shown when a list is empty or fails to load. */
   const emptyState = (text, cols) => cols
     ? `<tr><td colspan="${cols}" class="empty">${esc(text)}</td></tr>`
     : `<p class="empty">${esc(text)}</p>`;
@@ -331,7 +312,6 @@
       emptyState('No activity yet.', 5));
   }
 
-  // Footage: one folder per day, shown for the retention period and then deleted by the server.
   const FOLDER_ICON = '<svg class="folder-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h4.2a2 2 0 0 1 1.5.7L12 6h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"/></svg>';
   let openDay = null;
 
@@ -375,7 +355,6 @@
     if (openDay) await loadDay();
   }
 
-  /** Load a panel; on failure show an inline message instead of leaving "Loading..." forever. */
   const guarded = (loader, target, cols) => () => loader().catch((err) => {
     if (err.status !== 401) render(target, loadFailed(cols, err.message));
     throw err;
@@ -390,7 +369,6 @@
   poll(() => Promise.allSettled([refreshAlerts(), refreshUsers(), refreshIncidents(), refreshFootage(), refreshLogs()]), ADMIN_POLL_MS);
 
   // -------------------------------------------------------- admin: actions
-  // A snapshot that can't be loaded (file removed, etc.) gets a neutral placeholder, not a broken image.
   document.addEventListener('error', (event) => {
     const img = event.target;
     if (img instanceof HTMLImageElement && img.classList.contains('incident-thumb')) {
