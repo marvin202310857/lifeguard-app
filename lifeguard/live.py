@@ -2,7 +2,7 @@
 import time
 from flask import Blueprint, Response, abort, jsonify
 
-from . import settings as cfg
+from . import db, settings as cfg
 from .auth import admin_required, fail, json_body, login_required
 from .vision.worker import workers
 
@@ -12,7 +12,36 @@ bp = Blueprint("live", __name__)
 @bp.get("/api/stats")
 @login_required
 def stats():
-    cams = {cam_id: worker.metrics for cam_id, worker in workers.items()}
+    cams = {}
+    
+    # Query latest occupancy telemetry from database
+    latest_telemetry = {}
+    try:
+        with db.connect() as c:
+            rows = c.execute(
+                "SELECT camera_id, people_in_pool, people_poolside, submerged_count, timestamp "
+                "FROM occupancy_logs ORDER BY id DESC LIMIT 10"
+            ).fetchall()
+            for r in rows:
+                cam = r["camera_id"]
+                if cam not in latest_telemetry:
+                    latest_telemetry[cam] = dict(r)
+    except Exception:
+        pass
+
+    for cam_id in cfg.CAMERAS:
+        if cam_id in workers:
+            cams[cam_id] = workers[cam_id].metrics
+        else:
+            # Fallback metrics for Render Cloud / ESP32 Telemetry
+            tel = latest_telemetry.get(cam_id, {})
+            cams[cam_id] = {
+                "status": "SAFE",
+                "people_in_pool": tel.get("people_in_pool", 0),
+                "people_outside_pool": tel.get("people_poolside", 0),
+                "submerged_count": tel.get("submerged_count", 0),
+                "last_updated": tel.get("timestamp", "")
+            }
 
     def total(key):
         return sum(m.get(key, 0) for m in cams.values())
@@ -50,12 +79,32 @@ def _fallback_mjpeg(cam_id):
             frame = np.zeros((480, 640, 3), dtype=np.uint8)
             frame[:] = (25, 30, 35)
 
+            # Retrieve telemetry for overlay text
+            latest = {}
+            try:
+                with db.connect() as c:
+                    row = c.execute(
+                        "SELECT people_in_pool, people_poolside FROM occupancy_logs "
+                        "WHERE camera_id = ? ORDER BY id DESC LIMIT 1", (cam_id,)
+                    ).fetchone()
+                    if row:
+                        latest = dict(row)
+            except Exception:
+                pass
+
+            in_pool = latest.get("people_in_pool", 0)
+            poolside = latest.get("people_poolside", 0)
+
             # Draw Pool ROI Polyline
             roi_points = np.array([[80, 120], [560, 120], [560, 420], [80, 420]], np.int32)
             cv2.polylines(frame, [roi_points], isClosed=True, color=(255, 165, 0), thickness=2)
             cv2.putText(frame, "POOL ROI ZONE", (90, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+            
+            # Draw Process Status Summary
             cv2.putText(frame, f"CAM: {cam_id.upper()} | CV PROC: ACTIVE", (20, 35),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(frame, f"IN POOL: {in_pool} | POOLSIDE: {poolside}", (20, 65),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
             ret, buffer = cv2.imencode('.jpg', frame)
             frame_bytes = buffer.tobytes() if ret else b''
@@ -83,7 +132,7 @@ def feed(cam_id):
     worker = workers.get(cam_id)
     if worker is not None:
         return Response(_mjpeg(worker), mimetype="multipart/x-mixed-replace; boundary=frame")
-    # Fallback stream for Render cloud deployment
+    # Stream fallback for Render cloud deployment
     return Response(_fallback_mjpeg(cam_id), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
