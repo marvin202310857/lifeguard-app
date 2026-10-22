@@ -14,7 +14,7 @@ bp = Blueprint("live", __name__)
 def stats():
     cams = {}
     
-    # Query latest occupancy telemetry from database
+    # Query latest telemetry from occupancy_logs database
     latest_telemetry = {}
     try:
         with db.connect() as c:
@@ -33,8 +33,8 @@ def stats():
         if cam_id in workers:
             cams[cam_id] = workers[cam_id].metrics
         else:
-            # Fallback metrics for Render Cloud / ESP32 Telemetry
             tel = latest_telemetry.get(cam_id, {})
+            # Ensure "status" is populated so dashboard.js evaluates camera as active
             cams[cam_id] = {
                 "status": "SAFE",
                 "people_in_pool": tel.get("people_in_pool", 0),
@@ -58,15 +58,8 @@ def alerts():
     return jsonify([alert for worker in workers.values() for alert in worker.active_alerts()])
 
 
-def _mjpeg(worker):
-    last = -1
-    while True:
-        jpg, last = worker.wait_frame(last)
-        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
-
-
-def _fallback_mjpeg(cam_id):
-    """Generate dynamic process stream (ROI & metrics overlay) when worker is offline or in cloud mode."""
+def _generate_frame(cam_id):
+    """Generate a single JPEG frame for non-blocking stream requests."""
     try:
         import cv2
         import numpy as np
@@ -74,54 +67,46 @@ def _fallback_mjpeg(cam_id):
     except ImportError:
         has_cv2 = False
 
-    while True:
-        if has_cv2:
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            frame[:] = (25, 30, 35)
+    if has_cv2:
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame[:] = (25, 30, 35)
 
-            # Retrieve telemetry for overlay text
-            latest = {}
-            try:
-                with db.connect() as c:
-                    row = c.execute(
-                        "SELECT people_in_pool, people_poolside FROM occupancy_logs "
-                        "WHERE camera_id = ? ORDER BY id DESC LIMIT 1", (cam_id,)
-                    ).fetchone()
-                    if row:
-                        latest = dict(row)
-            except Exception:
-                pass
+        latest = {}
+        try:
+            with db.connect() as c:
+                row = c.execute(
+                    "SELECT people_in_pool, people_poolside FROM occupancy_logs "
+                    "WHERE camera_id = ? ORDER BY id DESC LIMIT 1", (cam_id,)
+                ).fetchone()
+                if row:
+                    latest = dict(row)
+        except Exception:
+            pass
 
-            in_pool = latest.get("people_in_pool", 0)
-            poolside = latest.get("people_poolside", 0)
+        in_pool = latest.get("people_in_pool", 0)
+        poolside = latest.get("people_poolside", 0)
 
-            # Draw Pool ROI Polyline
-            roi_points = np.array([[80, 120], [560, 120], [560, 420], [80, 420]], np.int32)
-            cv2.polylines(frame, [roi_points], isClosed=True, color=(255, 165, 0), thickness=2)
-            cv2.putText(frame, "POOL ROI ZONE", (90, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
-            
-            # Draw Process Status Summary
-            cv2.putText(frame, f"CAM: {cam_id.upper()} | CV PROC: ACTIVE", (20, 35),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(frame, f"IN POOL: {in_pool} | POOLSIDE: {poolside}", (20, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        # Draw ROI Polygon
+        roi_points = np.array([[80, 120], [560, 120], [560, 420], [80, 420]], np.int32)
+        cv2.polylines(frame, [roi_points], isClosed=True, color=(255, 165, 0), thickness=2)
+        cv2.putText(frame, "POOL ROI ZONE", (90, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
 
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes() if ret else b''
-            mimetype = 'image/jpeg'
-        else:
-            svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480">
-              <rect width="100%" height="100%" fill="#1a1d21"/>
-              <rect x="80" y="120" width="480" height="300" fill="none" stroke="#ffa500" stroke-width="2"/>
-              <text x="90" y="110" fill="#ffa500" font-family="sans-serif" font-size="16">POOL ROI ZONE</text>
-              <text x="20" y="40" fill="#ffffff" font-family="sans-serif" font-size="18">CAM: {cam_id.upper()} | PROCESS ACTIVE</text>
-            </svg>'''
-            frame_bytes = svg.encode('utf-8')
-            mimetype = 'image/svg+xml'
+        # Draw Status Overlay
+        cv2.putText(frame, f"CAM: {cam_id.upper()} | CV PROC: ACTIVE", (20, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(frame, f"IN POOL: {in_pool} | POOLSIDE: {poolside}", (20, 65),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-        yield (b'--frame\r\n'
-               b'Content-Type: ' + mimetype.encode('utf-8') + b'\r\n\r\n' + frame_bytes + b'\r\n')
-        time.sleep(0.2)
+        ret, buffer = cv2.imencode('.jpg', frame)
+        return buffer.tobytes() if ret else b'', 'image/jpeg'
+    else:
+        svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480">
+          <rect width="100%" height="100%" fill="#1a1d21"/>
+          <rect x="80" y="120" width="480" height="300" fill="none" stroke="#ffa500" stroke-width="2"/>
+          <text x="90" y="110" fill="#ffa500" font-family="sans-serif" font-size="16">POOL ROI ZONE</text>
+          <text x="20" y="40" fill="#ffffff" font-family="sans-serif" font-size="18">CAM: {cam_id.upper()} | PROCESS ACTIVE</text>
+        </svg>'''
+        return svg.encode('utf-8'), 'image/svg+xml'
 
 
 @bp.get("/<cam_id>_feed")
@@ -129,11 +114,15 @@ def _fallback_mjpeg(cam_id):
 def feed(cam_id):
     if cam_id not in cfg.CAMERAS:
         abort(404)
+        
     worker = workers.get(cam_id)
     if worker is not None:
-        return Response(_mjpeg(worker), mimetype="multipart/x-mixed-replace; boundary=frame")
-    # Stream fallback for Render cloud deployment
-    return Response(_fallback_mjpeg(cam_id), mimetype="multipart/x-mixed-replace; boundary=frame")
+        last = -1
+        jpg, _ = worker.wait_frame(last)
+        return Response(jpg, mimetype="image/jpeg")
+
+    frame_bytes, mimetype = _generate_frame(cam_id)
+    return Response(frame_bytes, mimetype=mimetype)
 
 
 def _clean_polygon(raw):
