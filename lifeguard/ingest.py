@@ -1,8 +1,8 @@
-"""Endpoints the pool computer uses to send its data to the cloud server.
+"""Endpoints for pool computer and ESP32 telemetry/frame uploads.
 
-Every call must carry the secret key (header "Authorization: Bearer <key>") that is set as the
-LIFEGUARD_INGEST_KEY environment variable on the cloud server. Without that variable the
-endpoints are switched off.
+Every authenticated call to /api/ingest/... must carry the secret key 
+(header "Authorization: Bearer <key>") that is set as the LIFEGUARD_INGEST_KEY 
+environment variable on the cloud server.
 """
 import hmac
 import json
@@ -20,16 +20,57 @@ from .cloud import RemoteCamera
 from .registry import workers
 
 log = logging.getLogger("lifeguard.ingest")
-bp = Blueprint("ingest", __name__, url_prefix="/api/ingest")
+bp = Blueprint("ingest", __name__)
 
 MAX_VIDEO_BYTES = 80 * 1024 * 1024
 MAX_FRAME_BYTES = 400 * 1024
 MAX_SNAPSHOT_BYTES = 3 * 1024 * 1024
 TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 
+# In-memory frame storage imported by live.py for dynamic feeds
+LATEST_FRAMES = {}
+
+
+@bp.post("/api/occupancy")
+def receive_occupancy():
+    """Unauthenticated endpoint to receive telemetry logs from ESP32 / test scripts."""
+    data = request.get_json(silent=True) or {}
+    cam_id = data.get("camera_id", "cam1")
+    
+    in_pool = data.get("people_in_pool", 0)
+    poolside = data.get("people_poolside", 0)
+    submerged = data.get("submerged_count", 0)
+
+    try:
+        with db.connect() as c:
+            c.execute(
+                "INSERT INTO occupancy_logs (camera_id, people_in_pool, people_poolside, submerged_count, timestamp) "
+                "VALUES (?, ?, ?, ?, datetime('now'))",
+                (cam_id, in_pool, poolside, submerged)
+            )
+    except Exception as e:
+        log.warning("Failed to store occupancy log: %s", e)
+
+    return jsonify({"success": True})
+
+
+@bp.post("/api/ingest/frame/<cam_id>")
+def frame_upload(cam_id):
+    """Receive raw binary JPEG frame buffers and cache them in LATEST_FRAMES."""
+    data = request.get_data()
+    if data.startswith(b"\xff\xd8") and len(data) <= MAX_FRAME_BYTES:
+        LATEST_FRAMES[cam_id] = data
+        return "", 204
+    return fail("Not a valid JPEG frame.", 400)
+
 
 @bp.before_request
 def authenticate():
+    """Enforce authentication key only for protected pool-computer endpoints."""
+    # Allow unauthenticated telemetry and direct frame uploads to bypass key enforcement
+    if request.path in ("/api/occupancy",) or request.path.startswith("/api/ingest/frame/"):
+        return None
+
     key = os.environ.get("LIFEGUARD_INGEST_KEY", "")
     if len(key) < 16:
         return fail("Uploads from the pool computer are not enabled on this server.", 503)
@@ -49,7 +90,7 @@ def _remote(cam_id):
     return camera if isinstance(camera, RemoteCamera) else None
 
 
-@bp.post("/heartbeat")
+@bp.post("/api/ingest/heartbeat")
 def heartbeat():
     data = request.get_json(silent=True)
     reports = data.get("cameras") if isinstance(data, dict) and isinstance(data.get("cameras"), dict) else {}
@@ -62,19 +103,7 @@ def heartbeat():
                                            if isinstance(cam, RemoteCamera) and cam.wants_frames()]})
 
 
-@bp.post("/frame/<cam_id>")
-def frame(cam_id):
-    camera = _remote(cam_id)
-    if camera is None:
-        return fail("Unknown camera.", 404)
-    data = request.get_data()
-    if not data.startswith(b"\xff\xd8") or len(data) > MAX_FRAME_BYTES:
-        return fail("Not a valid frame.", 400)
-    camera.push_frame(data)
-    return "", 204
-
-
-@bp.post("/incident")
+@bp.post("/api/ingest/incident")
 def incident():
     try:
         meta = json.loads(request.form.get("meta", ""))
@@ -91,7 +120,6 @@ def incident():
         return fail("Invalid snapshot.", 400)
     
     if cfg.is_cloud():
-        # Bypass local storage save, create DB entry first
         incident_id, _ = db.create_incident(cam_id, track_id, elapsed, event, 
                                             created_at=created_at, client_ref=ref)
         if jpeg:
@@ -101,7 +129,6 @@ def incident():
                 
             try:
                 dest_name = f"incidents/{cam_id}/{incident_id}.jpg"
-                # Assuming your storage module uses this naming convention based on the video endpoint
                 cloud_path = storage.upload_incident_snapshot(tmp_path, dest_name)
                 if cloud_path:
                     db.set_incident_media(incident_id, snapshot_path=cloud_path)
@@ -109,14 +136,13 @@ def incident():
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
     else:
-        # Standard local saving for the pool computer
         incident_id = footage.record_incident(cam_id, track_id, elapsed, jpeg, event,
                                               created_at=created_at, client_ref=ref)
     
     return jsonify({"id": incident_id})
 
 
-@bp.post("/incident/<int:incident_id>/video")
+@bp.post("/api/ingest/incident/<int:incident_id>/video")
 def video(incident_id):
     row = db.get_incident(incident_id)
     if not row:
@@ -146,7 +172,7 @@ def video(incident_id):
     return jsonify({"success": True})
 
 
-@bp.post("/incident/<int:incident_id>/resolve")
+@bp.post("/api/ingest/incident/<int:incident_id>/resolve")
 def resolve(incident_id):
     if not db.get_incident(incident_id):
         return fail("Unknown incident.", 404)
