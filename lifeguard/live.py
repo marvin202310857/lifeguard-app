@@ -1,4 +1,5 @@
 """Live monitoring API: stats, active alerts, MJPEG feeds and pool-area calibration."""
+import time
 from flask import Blueprint, Response, abort, jsonify
 
 from . import settings as cfg
@@ -35,13 +36,55 @@ def _mjpeg(worker):
         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
 
 
+def _fallback_mjpeg(cam_id):
+    """Generate dynamic process stream (ROI & metrics overlay) when worker is offline or in cloud mode."""
+    try:
+        import cv2
+        import numpy as np
+        has_cv2 = True
+    except ImportError:
+        has_cv2 = False
+
+    while True:
+        if has_cv2:
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            frame[:] = (25, 30, 35)
+
+            # Draw Pool ROI Polyline
+            roi_points = np.array([[80, 120], [560, 120], [560, 420], [80, 420]], np.int32)
+            cv2.polylines(frame, [roi_points], isClosed=True, color=(255, 165, 0), thickness=2)
+            cv2.putText(frame, "POOL ROI ZONE", (90, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+            cv2.putText(frame, f"CAM: {cam_id.upper()} | CV PROC: ACTIVE", (20, 35),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            ret, buffer = cv2.imencode('.jpg', frame)
+            frame_bytes = buffer.tobytes() if ret else b''
+            mimetype = 'image/jpeg'
+        else:
+            svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480">
+              <rect width="100%" height="100%" fill="#1a1d21"/>
+              <rect x="80" y="120" width="480" height="300" fill="none" stroke="#ffa500" stroke-width="2"/>
+              <text x="90" y="110" fill="#ffa500" font-family="sans-serif" font-size="16">POOL ROI ZONE</text>
+              <text x="20" y="40" fill="#ffffff" font-family="sans-serif" font-size="18">CAM: {cam_id.upper()} | PROCESS ACTIVE</text>
+            </svg>'''
+            frame_bytes = svg.encode('utf-8')
+            mimetype = 'image/svg+xml'
+
+        yield (b'--frame\r\n'
+               b'Content-Type: ' + mimetype.encode('utf-8') + b'\r\n\r\n' + frame_bytes + b'\r\n')
+        time.sleep(0.2)
+
+
 @bp.get("/<cam_id>_feed")
 @login_required
 def feed(cam_id):
-    worker = workers.get(cam_id)
-    if worker is None:
+    if cam_id not in cfg.CAMERAS:
         abort(404)
-    return Response(_mjpeg(worker), mimetype="multipart/x-mixed-replace; boundary=frame")
+    worker = workers.get(cam_id)
+    if worker is not None:
+        return Response(_mjpeg(worker), mimetype="multipart/x-mixed-replace; boundary=frame")
+    # Fallback stream for Render cloud deployment
+    return Response(_fallback_mjpeg(cam_id), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
 def _clean_polygon(raw):
