@@ -165,7 +165,7 @@ def login():
 
     # 3) wrong credentials: count it against the account+address and the address
     remaining, just_locked = db.record_failed_attempt(acct_key)
-    db.record_failed_attempt(addr_key, cfg.IP_MAX_FAILED_ATTEMPTS, cfg.IP_LOCK_SECONDS)
+    db.record_failed_attempt(addr_key, cfg.MAX_FAILED_ATTEMPTS, cfg.IP_LOCK_SECONDS)
     attempt = cfg.MAX_FAILED_ATTEMPTS - remaining
     db.log_event(username, "LOGIN_FAILED", False, ip, agent,
                  f"Failed attempt {attempt} of {cfg.MAX_FAILED_ATTEMPTS}")
