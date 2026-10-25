@@ -30,7 +30,7 @@ def stats():
         pass
 
     for cam_id in cfg.CAMERAS:
-        if cam_id in workers:
+        if cam_id in workers and getattr(workers[cam_id], "is_active", False):
             cams[cam_id] = workers[cam_id].metrics
             cams[cam_id]["online"] = True
             cams[cam_id]["status"] = "SAFE"
@@ -76,7 +76,7 @@ def feed(cam_id):
 
     # 1. Check local vision worker
     worker = workers.get(cam_id)
-    if worker is not None:
+    if worker is not None and getattr(worker, "is_active", False):
         jpg, _ = worker.wait_frame(-1)
         if jpg:
             res = Response(jpg, mimetype="image/jpeg")
@@ -91,7 +91,7 @@ def feed(cam_id):
 
     # 3. Dynamic Standby Frame (Returns HTTP 200 instead of 404)
     standby = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(standby, f"CAM: {cam_id.upper()} | WAITING FOR FEED...", (40, 240),
+    cv2.putText(standby, f"CAM: {cam_id.upper()} | STANDBY MODE", (40, 240),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 215, 255), 2)
     _, buffer = cv2.imencode(".jpg", standby)
     
