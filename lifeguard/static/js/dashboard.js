@@ -132,6 +132,7 @@
 
   const CHIPS = {
     SAFE: ['chip-safe', 'Live'],
+    ONLINE: ['chip-safe', 'Live'],
     WARNING: ['chip-warn', 'Warning'],
     DANGER: ['chip-danger', 'Alert'],
     OFFLINE: ['chip-offline', 'Offline'],
@@ -161,16 +162,19 @@
       return;
     }
 
-    const rows = cameras.map((cam) => ({ cam, m: stats[cam.id] || {} }));
-    const status = (row) => row.m.status || 'OFFLINE';
+    const rows = cameras.map((cam) => ({ cam, m: stats[cam.id] || (stats.cameras && stats.cameras[cam.id]) || {} }));
+    const status = (row) => row.m.status || (row.m.online ? 'SAFE' : 'OFFLINE');
 
     for (const { cam, m } of rows) {
-      const [cls, label] = CHIPS[m.status] || CHIPS.OFFLINE;
-      cam.chip.className = `chip ${cls}`;
-      cam.chip.textContent = label;
-      cam.inCount.textContent = m.people_in_pool ?? 0;
-      cam.outCount.textContent = m.people_outside_pool ?? 0;
-      cam.updated.textContent = m.last_updated ? `Updated ${m.last_updated.slice(-8)}` : 'No data yet';
+      const st = status({ m });
+      const [cls, label] = CHIPS[st] || CHIPS.OFFLINE;
+      if (cam.chip) {
+        cam.chip.className = `chip ${cls}`;
+        cam.chip.textContent = label;
+      }
+      if (cam.inCount) cam.inCount.textContent = m.people_in_pool ?? 0;
+      if (cam.outCount) cam.outCount.textContent = m.people_outside_pool ?? 0;
+      if (cam.updated) cam.updated.textContent = m.last_updated ? `Updated ${m.last_updated.slice(-8)}` : 'No data yet';
     }
 
     const online = rows.filter((r) => status(r) !== 'OFFLINE');
@@ -209,13 +213,12 @@
         }
       }
 
-      if (baseUrl) {
+      if (baseUrl && baseUrl !== 'undefined') {
         img.src = `${baseUrl}?t=${now}`;
       }
     }
   }
 
-  // Refresh feeds every 1 second
   setInterval(updateFeeds, 1000);
 
   poll(refreshStatus, STATUS_POLL_MS);
