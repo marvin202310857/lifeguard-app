@@ -2,7 +2,8 @@
 (() => {
   'use strict';
   const { esc, api, toast } = window.LG;
-  const $ = (selector, root = document) => root.querySelector(selector); const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const $ = (selector, root = document) => root.querySelector(selector); 
+  const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
   const IS_ADMIN = document.body.dataset.admin === 'true';
   const ME = (document.body.dataset.user || '').toLowerCase();
@@ -119,7 +120,8 @@
   })();
 
   // ------------------------------------------------------- live status + cams
-  const panel = $('#status-panel'); const cameras = $$('[data-cam]').map((el) => ({
+  const panel = $('#status-panel'); 
+  const cameras = $$('[data-cam]').map((el) => ({
     id: el.dataset.cam,
     name: el.dataset.name,
     chip: $('[data-role="chip"]', el),
@@ -198,9 +200,16 @@
     if (document.hidden) return;
     const now = Date.now();
     for (const img of feedImages) {
-      const baseUrl = (img.dataset.url || img.getAttribute('src') || '').split('?')[0];
+      let baseUrl = img.dataset.url;
+      if (!baseUrl) {
+        const rawSrc = img.getAttribute('src') || '';
+        if (rawSrc && !rawSrc.startsWith('undefined')) {
+          baseUrl = rawSrc.split('?')[0];
+          img.dataset.url = baseUrl;
+        }
+      }
+
       if (baseUrl) {
-        img.dataset.url = baseUrl;
         img.src = `${baseUrl}?t=${now}`;
       }
     }
