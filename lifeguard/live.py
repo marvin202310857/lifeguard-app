@@ -1,11 +1,9 @@
-"""Live monitoring API: stats, active alerts, MJPEG feeds and pool-area calibration."""
-import time
+"""Live monitoring API: stats, active alerts, JPEG feeds and telemetry routing."""
 import cv2
 import numpy as np
 from flask import Blueprint, Response, abort, jsonify
 
 from . import db, settings as cfg
-from .auth import admin_required, fail, json_body, login_required
 from .ingest import LATEST_FRAMES
 from .vision.worker import workers
 
@@ -70,11 +68,11 @@ def stats():
 
 @bp.get("/<cam_id>_feed")
 def feed(cam_id):
-    """Return live frame directly without blocking HTTP streams."""
+    """Return live JPEG frame buffer directly without blocking HTTP streams."""
     if cam_id not in cfg.CAMERAS:
         abort(404)
 
-    # 1. Check local vision worker
+    # 1. Check local vision worker stream
     worker = workers.get(cam_id)
     if worker is not None and getattr(worker, "is_active", False):
         jpg, _ = worker.wait_frame(-1)
@@ -83,13 +81,13 @@ def feed(cam_id):
             res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             return res
 
-    # 2. Check uploaded camera frame cache from test script / ESP32
+    # 2. Check uploaded camera frame cache (test script / ESP32-CAM)
     if cam_id in LATEST_FRAMES:
         res = Response(LATEST_FRAMES[cam_id], mimetype="image/jpeg")
         res.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return res
 
-    # 3. Dynamic Standby Frame (Returns HTTP 200 instead of 404)
+    # 3. Return dynamic standby frame (HTTP 200) instead of broken 404
     standby = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.putText(standby, f"CAM: {cam_id.upper()} | STANDBY MODE", (40, 240),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 215, 255), 2)

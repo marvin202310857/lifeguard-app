@@ -13,7 +13,7 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-# Dictionary holding active worker instances
+# Central registry of active local workers
 workers = {}
 
 class VisionWorker:
@@ -34,14 +34,14 @@ class VisionWorker:
 
     def _init_camera(self):
         try:
-            # Check if source is a physical device index (e.g. 0, 1)
+            # Check if source is a physical hardware index (0, 1, etc.)
             if isinstance(self.src, int):
-                logger.info(f"[{self.cam_id}] Skipping local hardware device index {self.src} (Cloud mode).")
+                logger.info(f"[{self.cam_id}] Bypassing local hardware device index {self.src} (Cloud container mode).")
                 self.cap = None
                 self.is_active = False
                 return
 
-            # Suppress stderr during VideoCapture initialization for non-int streams
+            # Suppress stderr during VideoCapture initialization for stream URLs
             stderr_fd = sys.stderr.fileno()
             with open(os.devnull, 'w') as devnull:
                 old_stderr = os.dup(stderr_fd)
@@ -54,7 +54,7 @@ class VisionWorker:
 
             self.is_active = self.cap is not None and self.cap.isOpened()
         except Exception as e:
-            logger.warning(f"[{self.cam_id}] Camera init safely skipped: {e}")
+            logger.warning(f"[{self.cam_id}] Camera init safely bypassed: {e}")
             self.cap = None
             self.is_active = False
 
