@@ -1,0 +1,8 @@
+{
+  "cam1": "http://192.168.1.62:81/stream",
+  "cam2": "http://192.168.1.72:81/stream",
+  "cam1_roi": [[0, 0], [1919, 0], [1919, 1079], [0, 1079]],
+  "cam2_roi": [[53, 408], [229, 252], [374, 246], [580, 444]],
+  "cam1_webcam_fallback": 0,
+  "remote_url": "https://lifeguard-8t4w.onrender.com"
+}

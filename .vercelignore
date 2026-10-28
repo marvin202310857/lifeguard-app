@@ -1,0 +1,17 @@
+.venv/
+venv/
+.git/
+.vercel/
+__pycache__/
+*.pyc
+*.db
+*.sqlite3
+*.mp4
+*.pt
+*.log*
+logs/
+incidents/
+footage/
+uploads/
+recordings/
+sample_pool_video.mp4

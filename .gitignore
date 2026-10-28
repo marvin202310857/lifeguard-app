@@ -1,21 +1,20 @@
-# local data - never commit
-lifeguard.db
-lifeguard.db-shm
-lifeguard.db-wal
-secret.key
-pool_events.log
-config.json
-footage/
-logs/
-*.pt
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache & build outputs
 __pycache__/
 *.pyc
-.venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
 
-sample_pool_video.mp4
-*.mp4
-*.avi
-incidents/
-
-.vercel
-.env*
+# Local databases & video/image assets
+*.db
+*.sqlite3
+uploads/
+recordings/
+.vercel/
