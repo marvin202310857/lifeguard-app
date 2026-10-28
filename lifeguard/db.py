@@ -184,3 +184,24 @@ def clear_failed_login(key: str, *args, **kwargs) -> None:
 # --- Event & Audit Logging Helpers ---
 
 def log_event(*args, **kwargs) -> None:
+    """Safely handle log_event regardless of argument count passed by auth.py."""
+    client = get_supabase_client()
+    if not client:
+        return
+    try:
+        username = kwargs.get("username") or (args[0] if len(args) > 0 and isinstance(args[0], str) else None)
+        event_type = kwargs.get("event_type") or (args[1] if len(args) > 1 else "SYSTEM_EVENT")
+        details = str(kwargs.get("details") or (args[2:] if len(args) > 2 else ""))
+
+        client.table("logs").insert({
+            "event_type": str(event_type),
+            "details": details,
+            "username": str(username) if username else None
+        }).execute()
+    except Exception:
+        pass
+
+
+def log_login_attempt(*args, **kwargs) -> None:
+    """Log authentication attempt events safely."""
+    log_event(*args, **kwargs)
