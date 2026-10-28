@@ -8,7 +8,8 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "flask",
-    "werkzeug"
+    "werkzeug",
+    "supabase"
 ]
 
 [tool.setuptools.packages.find]
