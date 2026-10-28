@@ -17,3 +17,5 @@ sample_pool_video.mp4
 *.avi
 incidents/
 
+.vercel
+.env*
