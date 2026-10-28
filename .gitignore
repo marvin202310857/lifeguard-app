@@ -11,3 +11,9 @@ logs/
 __pycache__/
 *.pyc
 .venv/
+
+sample_pool_video.mp4
+*.mp4
+*.avi
+incidents/
+
