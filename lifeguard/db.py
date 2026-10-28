@@ -1,28 +1,21 @@
 import os
 import pathlib
-import sqlite3
 from lifeguard import config as cfg
 
 def init_db():
-    """Initializes the database, falling back to /tmp on Vercel's read-only filesystem."""
+    """Initializes database connections, bypassing local SQLite directory creation when using Supabase."""
+    # If using Supabase, skip local filesystem setup completely
+    if os.environ.get("SUPABASE_URL") or getattr(cfg, "USE_SUPABASE", False):
+        print("Initializing Supabase database connection...")
+        # Add any remote Supabase initialization logic here if needed
+        return
+
+    # Fallback for local development using SQLite
     try:
-        # Attempt to create parent directory in local environment
         cfg.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        if e.errno == 30:  # Read-only file system (/var/task on Vercel)
-            # Override DB_PATH to point to /tmp
-            cfg.DB_PATH = pathlib.Path("/tmp") / cfg.DB_PATH.name
+        if e.errno == 30:  # Read-only filesystem on Vercel
+            cfg.DB_PATH = pathlib.Path("/tmp") / getattr(cfg.DB_PATH, "name", "lifeguard.db")
             cfg.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-            
-            # If using SQLAlchemy, also update SQLALCHEMY_DATABASE_URI dynamically
-            if hasattr(cfg, 'SQLALCHEMY_DATABASE_URI'):
-                cfg.SQLALCHEMY_DATABASE_URI = f"sqlite:///{cfg.DB_PATH}"
         else:
-            raise e
-
-    # Create schema tables if needed
-    conn = sqlite3.connect(cfg.DB_PATH)
-    cursor = conn.cursor()
-    # Add your CREATE TABLE IF NOT EXISTS statements here if applicable
-    conn.commit()
-    conn.close()
+            raise 
