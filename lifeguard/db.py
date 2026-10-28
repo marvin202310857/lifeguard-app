@@ -93,7 +93,7 @@ def get_user(username: str):
 
 def get_user_by_id(user_id):
     """Fetch user record by unique ID."""
-    if user_id == 1:
+    if user_id == 1 or str(user_id) == "1":
         return {
             "id": 1,
             "username": "admin",
@@ -197,7 +197,17 @@ def reset_failed_attempts(key: str, *args, **kwargs) -> None:
     pass
 
 
+def reset_throttle(key: str, *args, **kwargs) -> None:
+    """Alias for reset_failed_attempts called by auth.py on successful login."""
+    pass
+
+
 def clear_failed_login(key: str, *args, **kwargs) -> None:
+    """Alias for reset_failed_attempts."""
+    pass
+
+
+def clear_attempts(key: str, *args, **kwargs) -> None:
     """Alias for reset_failed_attempts."""
     pass
 
