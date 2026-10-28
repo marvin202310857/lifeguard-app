@@ -45,12 +45,14 @@ CAMERAS = {
     "cam2": "Secondary Pool Camera",
 }
 
-# --- Security Settings ---
+# --- Security & Rate-Limiting Settings ---
 USERNAME_PATTERN = r"^[a-zA-Z0-9.\-_]{3,30}$"
 MIN_PASSWORD_LENGTH = 8
 VALID_ROLES = ["User", "Administrator"]
 MAX_FAILED_ATTEMPTS = 5
 LOCK_SECONDS = 900
+IP_LOCK_SECONDS = 900
+ACCOUNT_LOCK_SECONDS = 900
 FAILURE_WINDOW_SECONDS = 3600
 SESSION_LIFETIME_SEC = 86400  # 24 hours session lifetime
 REMOTE_URL = None

@@ -82,6 +82,19 @@ def get_user(username: str):
         return None
 
 
+def get_user_by_id(user_id):
+    """Fetch user record from Supabase by unique ID."""
+    client = get_supabase_client()
+    if not client:
+        return None
+    try:
+        res = client.table("users").select("*").eq("id", user_id).execute()
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"Error fetching user ID '{user_id}': {e}")
+        return None
+
+
 def verify_password(user, password: str) -> bool:
     """Verify standard text password against stored hash/password."""
     if not user:
@@ -122,34 +135,48 @@ def create_user(username: str, password: str, role: str = "User"):
         return False
 
 
+def update_last_login(user_id) -> None:
+    """Update user last_login timestamp in Supabase."""
+    client = get_supabase_client()
+    if not client:
+        return
+    try:
+        from datetime import datetime, timezone
+        client.table("users").update({
+            "last_login": datetime.now(timezone.utc).isoformat()
+        }).eq("id", user_id).execute()
+    except Exception:
+        pass
+
+
 # --- Security & Rate-Limiting Helpers ---
 
-def get_lock_remaining(key: str) -> int:
+def get_lock_remaining(key: str, *args, **kwargs) -> int:
     """Return remaining lock duration in seconds (defaults to 0 for serverless)."""
     return 0
 
 
-def is_locked(key: str) -> bool:
+def is_locked(key: str, *args, **kwargs) -> bool:
     """Check if an account or IP address is rate-limited/locked."""
     return False
 
 
-def record_failed_attempt(key: str):
+def record_failed_attempt(key: str, *args, **kwargs):
     """Record a failed login attempt and return (remaining_lock_seconds, just_locked_bool)."""
     return 0, False
 
 
-def record_failed_login(key: str):
+def record_failed_login(key: str, *args, **kwargs):
     """Alias for record_failed_attempt."""
-    return record_failed_attempt(key)
+    return record_failed_attempt(key, *args, **kwargs)
 
 
-def reset_failed_attempts(key: str) -> None:
+def reset_failed_attempts(key: str, *args, **kwargs) -> None:
     """Clear failed login attempts for an account or IP."""
     pass
 
 
-def clear_failed_login(key: str) -> None:
+def clear_failed_login(key: str, *args, **kwargs) -> None:
     """Alias for reset_failed_attempts."""
     pass
 
