@@ -5,10 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lifeguard-app"
 version = "0.1.0"
+requires-python = ">=3.12"
 dependencies = [
     "flask",
     "werkzeug"
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
 
 [tool.vercel]
 entrypoint = "lifeguard.app:app"
