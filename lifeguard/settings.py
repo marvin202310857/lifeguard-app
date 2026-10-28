@@ -60,7 +60,11 @@ REMOTE_URL = None
 
 def load_secret_key():
     """Retrieve secret key from environment or generate a fallback for session security."""
-    key = os.environ.get("FLASK_SECRET_KEY") or os.environ.get("SECRET_KEY")
+    key = (
+        os.environ.get("FLASK_SECRET_KEY") 
+        or os.environ.get("FLASK_KEY") 
+        or os.environ.get("SECRET_KEY")
+    )
     if key:
         return key
     log.warning("No FLASK_SECRET_KEY set in environment; generating temporary secret key.")

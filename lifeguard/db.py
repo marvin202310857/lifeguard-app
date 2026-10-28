@@ -1,6 +1,7 @@
 import os
 import pathlib
 import logging
+import re
 from werkzeug.security import check_password_hash, generate_password_hash
 
 logger = logging.getLogger(__name__)
@@ -67,38 +68,23 @@ supabase = get_supabase_client()
 # --- User Management & Verification Helpers ---
 
 def get_user(username: str):
-    """Fetch user record from Supabase by username, fallback to virtual admin if missing."""
+    """Fetch user record from Supabase by username."""
     client = get_supabase_client()
-    if client:
-        try:
-            response = client.table("users").select("*").eq("username", username).execute()
-            if response.data and len(response.data) > 0:
-                return response.data[0]
-        except Exception as e:
-            logger.error(f"Error fetching user '{username}' from Supabase: {e}")
-    
-    # Virtual fallback for admin user if database record is missing/empty
-    if username == "admin":
-        return {
-            "id": 1,
-            "username": "admin",
-            "password_hash": generate_password_hash("admin123"),
-            "role": "Administrator",
-            "is_active": True,
-            "is_locked": False
-        }
-
-    return None
+    if not client:
+        logger.error("Supabase client unavailable for get_user.")
+        return None
+    try:
+        response = client.table("users").select("*").eq("username", username).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching user '{username}' from Supabase: {e}")
+        return None
 
 
 def get_user_by_id(user_id):
-    """Fetch user record by unique ID."""
-    if user_id == 1 or str(user_id) == "1":
-        return {
-            "id": 1,
-            "username": "admin",
-            "role": "Administrator"
-        }
+    """Fetch user record from Supabase by unique ID."""
     client = get_supabase_client()
     if not client:
         return None
@@ -110,16 +96,29 @@ def get_user_by_id(user_id):
         return None
 
 
-def verify_password(user, password: str) -> bool:
-    """Verify password with direct fallback for admin / admin123."""
-    if not user:
+def is_legacy_hash(hash_str: str) -> bool:
+    """
+    Check if a stored password hash string uses a legacy algorithm (e.g., md5, sha256, sha512, pbkdf2:sha256).
+    Current preferred Werkzeug hash algorithm is scrypt (scrypt:32768:8:1$).
+    """
+    if not hash_str or not isinstance(hash_str, str):
         return False
 
-    username = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
-    
-    # Immediate pass for admin / admin123
-    if username == "admin" and password == "admin123":
+    # Standard MD5/SHA256 raw hex hashes
+    if re.match(r"^[a-fA-F0-9]{32}$", hash_str) or re.match(r"^[a-fA-F0-9]{64}$", hash_str):
         return True
+
+    # Legacy Werkzeug / passlib hash patterns
+    if hash_str.startswith(("pbkdf2:sha256:", "sha256$", "md5$", "sha1$")):
+        return True
+
+    return False
+
+
+def verify_password(user, password: str) -> bool:
+    """Verify raw password against stored hash or legacy string safely."""
+    if not user or not password:
+        return False
 
     stored_hash = user.get("password_hash") if isinstance(user, dict) else getattr(user, "password_hash", None)
     stored_pass = user.get("password") if isinstance(user, dict) else getattr(user, "password", None)
@@ -128,12 +127,28 @@ def verify_password(user, password: str) -> bool:
         try:
             return check_password_hash(stored_hash, password)
         except Exception as e:
-            logger.warning(f"Failed checking hash format: {e}")
+            logger.warning(f"Failed checking hash format with Werkzeug check_password_hash: {e}")
 
+    # Fallback to plain text matching if legacy column exists
     if stored_pass:
         return stored_pass == password
 
     return False
+
+
+def rehash_password(user_id, password: str) -> bool:
+    """Upgrade a user's legacy password hash to modern scrypt hash in Supabase."""
+    client = get_supabase_client()
+    if not client or not user_id or not password:
+        return False
+    try:
+        new_hash = generate_password_hash(password)
+        client.table("users").update({"password_hash": new_hash}).eq("id", user_id).execute()
+        logger.info(f"Successfully upgraded password hash for user_id '{user_id}'.")
+        return True
+    except Exception as e:
+        logger.error(f"Failed rehashing password for user_id '{user_id}': {e}")
+        return False
 
 
 def create_user(username: str, password: str, role: str = "User"):
@@ -157,7 +172,7 @@ def create_user(username: str, password: str, role: str = "User"):
 
 
 def update_last_login(user_id) -> None:
-    """Update user last_login timestamp."""
+    """Update user last_login timestamp in Supabase."""
     client = get_supabase_client()
     if not client:
         return
@@ -166,8 +181,8 @@ def update_last_login(user_id) -> None:
         client.table("users").update({
             "last_login": datetime.now(timezone.utc).isoformat()
         }).eq("id", user_id).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Failed updating last_login for user_id '{user_id}': {e}")
 
 
 # --- Security & Rate-Limiting Helpers ---
@@ -215,22 +230,48 @@ def clear_attempts(key: str, *args, **kwargs) -> None:
 # --- Event & Audit Logging Helpers ---
 
 def log_event(*args, **kwargs) -> None:
-    """Safely handle log_event regardless of argument count passed by auth.py."""
+    """
+    Safely handle log_event across varying call-site signatures.
+    Supports:
+      - log_event(username, event_type, success, ip, agent, details)
+      - log_event(event_type, details, username)
+      - Keyword arguments
+    """
     client = get_supabase_client()
     if not client:
         return
     try:
-        username = kwargs.get("username") or (args[0] if len(args) > 0 and isinstance(args[0], str) else None)
-        event_type = kwargs.get("event_type") or (args[1] if len(args) > 1 else "SYSTEM_EVENT")
-        details = str(kwargs.get("details") or (args[2:] if len(args) > 2 else ""))
+        # Resolve parameters flexibly
+        username = kwargs.get("username")
+        event_type = kwargs.get("event_type")
+        details = kwargs.get("details", "")
 
-        client.table("logs").insert({
-            "event_type": str(event_type),
-            "details": details,
+        if not username and len(args) > 0 and isinstance(args[0], str):
+            username = args[0]
+        if not event_type and len(args) > 1 and isinstance(args[1], str):
+            event_type = args[1]
+
+        # Handle 6-argument call from auth.py: (username, event_type, success, ip, agent, details)
+        if len(args) >= 6:
+            username = args[0]
+            event_type = args[1]
+            success = args[2]
+            ip = args[3]
+            agent = args[4]
+            extra_details = args[5]
+            details = f"Success: {success} | IP: {ip} | Agent: {agent} | Details: {extra_details}"
+        elif len(args) >= 3 and not details:
+            details = str(args[2:])
+
+        payload = {
+            "event_type": str(event_type or "SYSTEM_EVENT"),
+            "details": str(details),
             "username": str(username) if username else None
-        }).execute()
-    except Exception:
-        pass
+        }
+
+        client.table("logs").insert(payload).execute()
+    except Exception as e:
+        logger.warning(f"Failed inserting audit log event: {e}")
 
 
 def log_login_attempt(*args, **kwargs) -> None:
