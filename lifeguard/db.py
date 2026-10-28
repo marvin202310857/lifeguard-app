@@ -64,6 +64,24 @@ def init_db():
 supabase = get_supabase_client()
 
 
+# --- User Management Helpers ---
+
+def get_user(username: str):
+    """Fetch user record from Supabase by username."""
+    client = get_supabase_client()
+    if not client:
+        logger.error("Supabase client unavailable for get_user.")
+        return None
+    try:
+        response = client.table("users").select("*").eq("username", username).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching user '{username}' from Supabase: {e}")
+        return None
+
+
 # --- Security & Rate-Limiting Fallback Helpers ---
 
 def get_lock_remaining(key: str) -> int:
