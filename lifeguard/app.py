@@ -8,8 +8,9 @@ from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import __version__, admin, auth, db, footage, ingest, live, pages
-from . import settings as cfg
+# Fixed: Changed relative imports to absolute package imports for Vercel compatibility
+from lifeguard import __version__, admin, auth, db, footage, ingest, live, pages
+from lifeguard import settings as cfg
 
 CSP = (
     "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
@@ -98,12 +99,12 @@ def create_app(start_cameras=True, start_maintenance=True):
   if start_maintenance and hasattr(footage, "start_maintenance"):
     footage.start_maintenance()  # daily folders + retention cleanup
   if getattr(cfg, "is_cloud", lambda: False)():  # Render mode
-    from . import cloud
+    from lifeguard import cloud
 
     cloud.register_cameras()
   elif start_cameras:  # Local pool computer mode
-    from . import uplink
-    from .vision.worker import start_workers
+    from lifeguard import uplink
+    from lifeguard.vision.worker import start_workers
 
     start_workers()
     uplink.start()  # sends live status + alerts to cloud
