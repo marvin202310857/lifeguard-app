@@ -1,6 +1,7 @@
 import os
 import pathlib
 import logging
+from werkzeug.security import check_password_hash, generate_password_hash
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,6 @@ def get_supabase_client():
     url = (os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or "").strip()
     key = (os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
 
-    # Validate presence and format of URL
     if not url or not key:
         logger.warning("Supabase credentials missing. Ensure SUPABASE_URL and SUPABASE_KEY are set.")
         return None
@@ -64,7 +64,7 @@ def init_db():
 supabase = get_supabase_client()
 
 
-# --- User Management Helpers ---
+# --- User Management & Verification Helpers ---
 
 def get_user(username: str):
     """Fetch user record from Supabase by username."""
@@ -82,7 +82,49 @@ def get_user(username: str):
         return None
 
 
-# --- Security & Rate-Limiting Fallback Helpers ---
+def verify_password(user, password: str) -> bool:
+    """Verify standard text password against stored hash/password."""
+    if not user:
+        return False
+    
+    # Handle dictionary or object formats
+    stored_hash = user.get("password_hash") if isinstance(user, dict) else getattr(user, "password_hash", None)
+    stored_pass = user.get("password") if isinstance(user, dict) else getattr(user, "password", None)
+
+    if stored_hash:
+        try:
+            return check_password_hash(stored_hash, password)
+        except Exception as e:
+            logger.warning(f"Failed checking hash format: {e}")
+
+    # Plain text fallback if hashed verification is not applicable
+    if stored_pass:
+        return stored_pass == password
+
+    return False
+
+
+def create_user(username: str, password: str, role: str = "User"):
+    """Create a new user record in Supabase."""
+    client = get_supabase_client()
+    if not client:
+        logger.error("Supabase client unavailable for create_user.")
+        return False
+    try:
+        pw_hash = generate_password_hash(password)
+        data = {
+            "username": username,
+            "password_hash": pw_hash,
+            "role": role
+        }
+        client.table("users").insert(data).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create user '{username}': {e}")
+        return False
+
+
+# --- Security & Rate-Limiting Helpers ---
 
 def get_lock_remaining(key: str) -> int:
     """Return remaining lock duration in seconds (defaults to 0 for serverless)."""
@@ -102,3 +144,25 @@ def record_failed_login(key: str) -> int:
 def clear_failed_login(key: str) -> None:
     """Clear failed login attempts for an account or IP."""
     pass
+
+
+# --- Event & Audit Logging Helpers ---
+
+def log_event(event_type: str, details: str = "", username: str = None) -> None:
+    """Log system events to Supabase audit log if configured."""
+    client = get_supabase_client()
+    if not client:
+        return
+    try:
+        client.table("logs").insert({
+            "event_type": event_type,
+            "details": details,
+            "username": username
+        }).execute()
+    except Exception:
+        pass  # Gracefully ignore log table absence if optional
+
+
+def log_login_attempt(username: str, success: bool, ip_address: str = "") -> None:
+    """Log authentication attempt events."""
+    log_event("LOGIN_ATTEMPT", f"Success: {success}, IP: {ip_address}", username)
