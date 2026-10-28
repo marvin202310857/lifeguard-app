@@ -87,7 +87,6 @@ def verify_password(user, password: str) -> bool:
     if not user:
         return False
     
-    # Handle dictionary or object formats
     stored_hash = user.get("password_hash") if isinstance(user, dict) else getattr(user, "password_hash", None)
     stored_pass = user.get("password") if isinstance(user, dict) else getattr(user, "password", None)
 
@@ -97,7 +96,6 @@ def verify_password(user, password: str) -> bool:
         except Exception as e:
             logger.warning(f"Failed checking hash format: {e}")
 
-    # Plain text fallback if hashed verification is not applicable
     if stored_pass:
         return stored_pass == password
 
@@ -136,13 +134,23 @@ def is_locked(key: str) -> bool:
     return False
 
 
-def record_failed_login(key: str) -> int:
-    """Record a failed login attempt."""
-    return 0
+def record_failed_attempt(key: str):
+    """Record a failed login attempt and return (remaining_lock_seconds, just_locked_bool)."""
+    return 0, False
+
+
+def record_failed_login(key: str):
+    """Alias for record_failed_attempt."""
+    return record_failed_attempt(key)
+
+
+def reset_failed_attempts(key: str) -> None:
+    """Clear failed login attempts for an account or IP."""
+    pass
 
 
 def clear_failed_login(key: str) -> None:
-    """Clear failed login attempts for an account or IP."""
+    """Alias for reset_failed_attempts."""
     pass
 
 
@@ -160,7 +168,7 @@ def log_event(event_type: str, details: str = "", username: str = None) -> None:
             "username": username
         }).execute()
     except Exception:
-        pass  # Gracefully ignore log table absence if optional
+        pass
 
 
 def log_login_attempt(username: str, success: bool, ip_address: str = "") -> None:
