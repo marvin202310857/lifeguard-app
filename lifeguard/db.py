@@ -183,21 +183,4 @@ def clear_failed_login(key: str, *args, **kwargs) -> None:
 
 # --- Event & Audit Logging Helpers ---
 
-def log_event(event_type: str, details: str = "", username: str = None) -> None:
-    """Log system events to Supabase audit log if configured."""
-    client = get_supabase_client()
-    if not client:
-        return
-    try:
-        client.table("logs").insert({
-            "event_type": event_type,
-            "details": details,
-            "username": username
-        }).execute()
-    except Exception:
-        pass
-
-
-def log_login_attempt(username: str, success: bool, ip_address: str = "") -> None:
-    """Log authentication attempt events."""
-    log_event("LOGIN_ATTEMPT", f"Success: {success}, IP: {ip_address}", username)
+def log_event(*args, **kwargs) -> None:
