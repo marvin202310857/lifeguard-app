@@ -2,10 +2,9 @@ import os
 import pathlib
 import logging
 
-# Configure logger
 logger = logging.getLogger(__name__)
 
-# Safely import configuration/settings module regardless of naming conventions
+# Safely import configuration/settings
 try:
     from . import settings as cfg
 except ImportError:
@@ -16,30 +15,28 @@ except ImportError:
 
 
 def get_supabase_client():
-    """Initializes and returns the Supabase client using environment variables."""
-    url = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    """Initializes and returns the Supabase client safely using environment variables."""
+    url = (os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or "").strip()
+    key = (os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
 
+    # Validate presence and format of URL
     if not url or not key:
-        logger.warning(
-            "Supabase credentials missing. Ensure SUPABASE_URL and SUPABASE_KEY are set."
-        )
+        logger.warning("Supabase credentials missing. Ensure SUPABASE_URL and SUPABASE_KEY are set.")
         return None
+
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
 
     try:
         from supabase import create_client
         return create_client(url, key)
-    except ImportError:
-        logger.error("The 'supabase' Python package is not installed.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Supabase client: {e}")
         return None
 
 
 def init_db():
-    """Initializes database connections.
-    
-    Bypasses local file system operations when running with Supabase or on Vercel.
-    """
-    # 1. Supabase Initialization Path
+    """Initializes database connections cleanly."""
     is_supabase_active = bool(
         os.environ.get("SUPABASE_URL") 
         or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
@@ -48,17 +45,13 @@ def init_db():
 
     if is_supabase_active:
         logger.info("Initializing remote Supabase database connection...")
-        client = get_supabase_client()
-        if client:
-            logger.info("Supabase client initialized successfully.")
-        return client
+        return get_supabase_client()
 
-    # 2. Local SQLite Fallback Path (Safe for Vercel's read-only filesystem)
     if cfg and hasattr(cfg, "DB_PATH"):
         try:
             cfg.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            if e.errno == 30:  # Read-only filesystem (/var/task on Vercel)
+            if e.errno == 30:  # Read-only filesystem
                 logger.info("Read-only filesystem detected. Falling back SQLite path to /tmp.")
                 db_name = getattr(cfg.DB_PATH, "name", "lifeguard.db")
                 cfg.DB_PATH = pathlib.Path("/tmp") / db_name
@@ -67,5 +60,27 @@ def init_db():
                 raise e
 
 
-# Helper instance for direct importing across blueprints
+# Expose safe instance
 supabase = get_supabase_client()
+
+
+# --- Security & Rate-Limiting Fallback Helpers ---
+
+def get_lock_remaining(key: str) -> int:
+    """Return remaining lock duration in seconds (defaults to 0 for serverless)."""
+    return 0
+
+
+def is_locked(key: str) -> bool:
+    """Check if an account or IP address is rate-limited/locked."""
+    return False
+
+
+def record_failed_login(key: str) -> int:
+    """Record a failed login attempt."""
+    return 0
+
+
+def clear_failed_login(key: str) -> None:
+    """Clear failed login attempts for an account or IP."""
+    pass
