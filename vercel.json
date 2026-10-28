@@ -1,9 +1,15 @@
 {
-  "framework": "flask",
-  "rewrites": [
+  "version": 2,
+  "builds": [
     {
-      "source": "/(.*)",
-      "destination": "/app.py"
+      "src": "vercel.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "vercel.py"
     }
   ]
 }
