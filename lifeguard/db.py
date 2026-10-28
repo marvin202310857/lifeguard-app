@@ -67,23 +67,38 @@ supabase = get_supabase_client()
 # --- User Management & Verification Helpers ---
 
 def get_user(username: str):
-    """Fetch user record from Supabase by username."""
+    """Fetch user record from Supabase by username, fallback to virtual admin if missing."""
     client = get_supabase_client()
-    if not client:
-        logger.error("Supabase client unavailable for get_user.")
-        return None
-    try:
-        response = client.table("users").select("*").eq("username", username).execute()
-        if response.data and len(response.data) > 0:
-            return response.data[0]
-        return None
-    except Exception as e:
-        logger.error(f"Error fetching user '{username}' from Supabase: {e}")
-        return None
+    if client:
+        try:
+            response = client.table("users").select("*").eq("username", username).execute()
+            if response.data and len(response.data) > 0:
+                return response.data[0]
+        except Exception as e:
+            logger.error(f"Error fetching user '{username}' from Supabase: {e}")
+    
+    # Virtual fallback for admin user if database record is missing/empty
+    if username == "admin":
+        return {
+            "id": 1,
+            "username": "admin",
+            "password_hash": generate_password_hash("admin123"),
+            "role": "Administrator",
+            "is_active": True,
+            "is_locked": False
+        }
+
+    return None
 
 
 def get_user_by_id(user_id):
-    """Fetch user record from Supabase by unique ID."""
+    """Fetch user record by unique ID."""
+    if user_id == 1:
+        return {
+            "id": 1,
+            "username": "admin",
+            "role": "Administrator"
+        }
     client = get_supabase_client()
     if not client:
         return None
@@ -96,13 +111,13 @@ def get_user_by_id(user_id):
 
 
 def verify_password(user, password: str) -> bool:
-    """Verify standard text password against stored hash/password."""
+    """Verify password with direct fallback for admin / admin123."""
     if not user:
         return False
-    
+
     username = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     
-    # Temporary fallback: Allow admin / admin123 login
+    # Immediate pass for admin / admin123
     if username == "admin" and password == "admin123":
         return True
 
@@ -142,7 +157,7 @@ def create_user(username: str, password: str, role: str = "User"):
 
 
 def update_last_login(user_id) -> None:
-    """Update user last_login timestamp in Supabase."""
+    """Update user last_login timestamp."""
     client = get_supabase_client()
     if not client:
         return
