@@ -9,7 +9,19 @@ log = logging.getLogger("lifeguard.settings")
 
 # --- Base Paths & File Configurations ---
 BASE_DIR = Path(__file__).parent.parent.absolute()
-DATA_DIR = BASE_DIR / "data"
+
+# Safe directory handling for Vercel read-only filesystem
+if os.environ.get("VERCEL"):
+    DATA_DIR = Path("/tmp")
+else:
+    DATA_DIR = BASE_DIR / "data"
+
+# Create local directory if not running in read-only environment
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    DATA_DIR = Path("/tmp")
+
 DB_PATH = DATA_DIR / "lifeguard.db"
 MEDIA_DIR = DATA_DIR / "media"
 CONFIG_FILE = DATA_DIR / "config.json"
@@ -28,7 +40,6 @@ OCCUPANCY_RETENTION_DAYS = 30
 LOGIN_LOG_RETENTION_DAYS = 30
 
 # --- Camera Configuration ---
-# Configured for exactly 2 camera containers
 CAMERAS = {
     "cam1": "Main Pool Camera",
     "cam2": "Secondary Pool Camera",
@@ -44,16 +55,34 @@ FAILURE_WINDOW_SECONDS = 3600
 SESSION_LIFETIME_SEC = 86400  # 24 hours session lifetime
 REMOTE_URL = None
 
+
+def load_secret_key():
+    """Retrieve secret key from environment or generate a fallback for session security."""
+    key = os.environ.get("FLASK_SECRET_KEY") or os.environ.get("SECRET_KEY")
+    if key:
+        return key
+    log.warning("No FLASK_SECRET_KEY set in environment; generating temporary secret key.")
+    return secrets.token_hex(32)
+
+
+# Expose top-level SECRET_KEY for Flask initialization
+SECRET_KEY = load_secret_key()
+
 # --- Cloud Database & Storage Credentials ---
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_URL = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_KEY = (
+    os.environ.get("SUPABASE_KEY")
+    or os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    or SUPABASE_SERVICE_ROLE_KEY
+)
 SUPABASE_DB_URL = os.environ.get("SUPABASE_DB_URL")
 
 
 # --- Config File Management ---
 _lock = threading.Lock()
 _cache = {"mtime": None, "data": {}}
+
 
 def load_config():
     """config.json as a dict, re-read only when the file changes."""
@@ -70,6 +99,7 @@ def load_config():
                 log.warning("Could not read %s: %s", CONFIG_FILE.name, exc)
         return _cache["data"]
 
+
 def set_config_value(key, value):
     """Update one key atomically (write temp file, then rename)."""
     with _lock:
@@ -80,8 +110,11 @@ def set_config_value(key, value):
 
         data[key] = value
         tmp = CONFIG_FILE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2), "utf-8")
-        os.replace(tmp, CONFIG_FILE)
+        try:
+            tmp.write_text(json.dumps(data, indent=2), "utf-8")
+            os.replace(tmp, CONFIG_FILE)
+        except OSError as exc:
+            log.warning("Could not persist setting %s to disk: %s", key, exc)
 
         _cache["mtime"] = None
 
@@ -150,18 +183,12 @@ def cloud_settings():
         "frame_fps": max(0.5, min(frame_fps, 5.0)),
     }
 
+
 def is_cloud():
     """Whether this process is running in a cloud deployment."""
     return (
-        bool(os.environ.get("RENDER"))
+        bool(os.environ.get("VERCEL"))
+        or bool(os.environ.get("RENDER"))
         or os.environ.get("LIFEGUARD_CLOUD") == "1"
         or os.environ.get("IS_CLOUD", "").lower() in ("true", "1")
     )
-
-def load_secret_key():
-    """Retrieve secret key from environment or generate a fallback for session security."""
-    key = os.environ.get("FLASK_SECRET_KEY") or os.environ.get("SECRET_KEY")
-    if key:
-        return key
-    log.warning("No FLASK_SECRET_KEY set in environment; generating temporary secret key.")
-    return secrets.token_hex(32)
