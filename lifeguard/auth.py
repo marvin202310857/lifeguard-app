@@ -1,4 +1,4 @@
-"""Authentication: session helpers, decorators and the register / login / logout routes."""
+"""Authentication routes and session helpers for LifeGuard."""
 import ipaddress
 import os
 from functools import wraps
@@ -12,7 +12,6 @@ from .notify import notify_admins_email
 bp = Blueprint("auth", __name__)
 
 
-# ------------------------------------------------------------------ helpers
 def json_body():
     data = request.get_json(silent=True)
     return data if isinstance(data, dict) else {}
@@ -22,16 +21,20 @@ LOOPBACK = ("127.0.0.1", "::1")
 
 
 def proxy_enabled():
-    """True when LifeGuard sits behind a reverse proxy / tunnel on this computer (cloudflared, nginx...)."""
-    return bool(cfg.load_config().get("behind_proxy")) or os.environ.get("LIFEGUARD_PROXY") == "1"
+    try:
+        configured = bool(cfg.load_config().get("behind_proxy"))
+    except Exception:
+        configured = False
+    return configured or os.environ.get("LIFEGUARD_PROXY") == "1"
 
 
 def _from_trusted_proxy(direct):
-    """The proxy must be on this computer (tunnel), or - only if you say so - on a private network
-    address, which is how Render's load balancer reaches the app."""
     if direct in LOOPBACK:
         return True
-    trust = (os.environ.get("LIFEGUARD_PROXY_TRUST") or str(cfg.load_config().get("proxy_trust") or "")).lower()
+    try:
+        trust = (os.environ.get("LIFEGUARD_PROXY_TRUST") or str(cfg.load_config().get("proxy_trust") or "")).lower()
+    except Exception:
+        trust = os.environ.get("LIFEGUARD_PROXY_TRUST", "").lower()
     if trust == "private":
         try:
             return ipaddress.ip_address(direct).is_private
@@ -41,15 +44,13 @@ def _from_trusted_proxy(direct):
 
 
 def client_ip():
-    """The visitor's address. Behind a trusted proxy this is the address the proxy forwards; a
-    connection from anywhere else can't fake it because the forwarded headers are ignored."""
-    direct = request.remote_addr
+    direct = request.remote_addr or "unknown"
     if proxy_enabled() and _from_trusted_proxy(direct):
         forwarded = (request.headers.get("CF-Connecting-IP") or request.headers.get("True-Client-IP")
                      or request.headers.get("X-Forwarded-For", "").split(",")[0]).strip()
         if forwarded:
             return forwarded[:45]
-    return direct
+    return direct[:45]
 
 
 def account_key(username, ip):
@@ -70,15 +71,18 @@ def fmt_duration(seconds):
 
 
 def current_user():
-    """The signed-in user, re-checked against the DB once per request, so deleted or
-    unapproved accounts lose access immediately."""
+    """Re-check account approval in Supabase on each request."""
     if "current_user" not in g:
         user = None
         stored = session.get("user")
-        if stored:
-            row = db.get_user(stored.get("username"))
-            if row and row["approved"]:
-                user = {"username": row["username"], "role": row["role"], "id": row["id"]}
+        if isinstance(stored, dict) and stored.get("username"):
+            row = db.get_user(stored["username"])
+            if row and int(row.get("approved") or 0) == 1:
+                user = {
+                    "username": row.get("username", ""),
+                    "role": row.get("role", "User"),
+                    "id": row.get("id"),
+                }
             else:
                 session.pop("user", None)
         g.current_user = user
@@ -86,7 +90,7 @@ def current_user():
 
 
 def is_admin(user):
-    return bool(user) and user["role"] == "Administrator"
+    return bool(user) and user.get("role") == "Administrator"
 
 
 def _wants_json():
@@ -114,14 +118,14 @@ def admin_required(view):
     return wrapped
 
 
-# ------------------------------------------------------------------- routes
 @bp.post("/register")
 @bp.post("/api/register")
 def register():
     data = json_body()
-    username = str(data.get("username", "")).strip()
-    ok, error = db.register_user(username, str(data.get("password", "")), data.get("role", "User"))
-    db.log_event(username[:80] or None, "REGISTER", ok, client_ip(), request.user_agent.string,
+    username = str(data.get("username", "")).strip()[:80]
+    password = str(data.get("password", ""))
+    ok, error = db.register_user(username, password, "User")
+    db.log_event(username or None, "REGISTER", ok, client_ip(), request.user_agent.string,
                  "Account requested" if ok else error)
     if not ok:
         return jsonify({"success": False, "error": error}), 400
@@ -137,10 +141,8 @@ def login():
     ip, agent = client_ip(), request.user_agent.string
     if not username or not password:
         return fail("Username and password required.", 400)
-    acct_key, addr_key = account_key(username, ip), address_key(ip)
 
-    # 1) blocked? A lock applies to one account from one address, or to one address overall,
-    #    so a stranger can't lock the real administrator out from somewhere else.
+    acct_key, addr_key = account_key(username, ip), address_key(ip)
     left = max(db.get_lock_remaining(acct_key), db.get_lock_remaining(addr_key))
     if left:
         db.log_event(username, "LOGIN_BLOCKED", False, ip, agent, "Too many failed attempts from this address")
@@ -148,37 +150,43 @@ def login():
                     f"Try again in {fmt_duration(left)}. The administrator has been notified.",
                     423, locked=True, seconds_left=left)
 
-    # 2) credentials
     user = db.get_user(username)
     if db.verify_password(user, password):
         db.reset_throttle(acct_key)
-        if db.is_legacy_hash(user["password_hash"]):
-            db.set_password(user["id"], password)      # upgrade old SHA-256 hash to a salted one
-        if not user["approved"]:
-            db.log_event(user["username"], "LOGIN_PENDING", False, ip, agent, "Account awaiting approval")
+        stored_hash = user.get("password_hash") if isinstance(user, dict) else None
+        if db.is_legacy_hash(stored_hash):
+            db.set_password(user.get("id"), password)
+        if int(user.get("approved") or 0) != 1:
+            db.log_event(user.get("username"), "LOGIN_PENDING", False, ip, agent, "Account awaiting approval")
             return fail("Your account is pending administrator approval.", 403)
         session.clear()
         session.permanent = True
-        session["user"] = {"username": user["username"], "role": user["role"]}
-        db.log_event(user["username"], "LOGIN_SUCCESS", True, ip, agent)
+        session["user"] = {"username": user["username"], "role": user.get("role", "User")}
+        db.log_event(user["username"], "LOGIN_SUCCESS", True, ip, agent, "Login successful")
         return jsonify({"success": True, "redirect": "/dashboard"})
 
-    # 3) wrong credentials: count it against the account+address and the address
     remaining, just_locked = db.record_failed_attempt(acct_key)
-    db.record_failed_attempt(addr_key, cfg.MAX_FAILED_ATTEMPTS, cfg.IP_LOCK_SECONDS)
-    attempt = cfg.MAX_FAILED_ATTEMPTS - remaining
+    ip_max = getattr(cfg, "MAX_FAILED_ATTEMPTS", 5)
+    ip_lock = getattr(cfg, "IP_LOCK_SECONDS", 900)
+    db.record_failed_attempt(addr_key, ip_max, ip_lock)
+    attempt = ip_max - remaining
     db.log_event(username, "LOGIN_FAILED", False, ip, agent,
-                 f"Failed attempt {attempt} of {cfg.MAX_FAILED_ATTEMPTS}")
+                 f"Failed attempt {attempt} of {ip_max}")
     if just_locked:
         known = "" if user else " (no such account)"
-        message = (f"Account '{username}'{known} was LOCKED for {fmt_duration(cfg.LOCK_SECONDS)} from "
-                   f"IP {ip} after {cfg.MAX_FAILED_ATTEMPTS} failed login attempts.")
+        lock_seconds = getattr(cfg, "LOCK_SECONDS", 900)
+        message = (f"Account '{username}'{known} was locked for {fmt_duration(lock_seconds)} "
+                   f"from IP {ip} after {ip_max} failed login attempts.")
         db.log_event(username, "ACCOUNT_LOCKED", False, ip, agent, message)
         db.add_admin_alert("ACCOUNT_LOCKED", message, username, ip)
-        notify_admins_email("LifeGuard security alert: account locked", message)
+        try:
+            notify_admins_email("LifeGuard security alert: account locked", message)
+        except Exception:
+            # Database alert remains available even if email is not configured.
+            pass
         return fail("Too many failed attempts. Login from this device is locked for "
-                    f"{fmt_duration(cfg.LOCK_SECONDS)}. The administrator has been notified.",
-                    423, locked=True, seconds_left=cfg.LOCK_SECONDS)
+                    f"{fmt_duration(lock_seconds)}. The administrator has been notified.",
+                    423, locked=True, seconds_left=lock_seconds)
     return fail(f"Invalid username or password. {remaining} attempt(s) left before the account is locked.",
                 401, attempts_remaining=remaining)
 
@@ -187,7 +195,8 @@ def login():
 def logout():
     user = session.get("user")
     if user:
-        db.log_event(user.get("username"), "LOGOUT", True, client_ip(), request.user_agent.string)
+        db.log_event(user.get("username"), "LOGOUT", True, client_ip(), request.user_agent.string,
+                     "User logged out")
     session.clear()
     return redirect("/")
 
