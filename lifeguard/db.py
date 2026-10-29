@@ -789,3 +789,262 @@ def delete_user(user_id):
     except Exception:
         logger.exception("Failed to delete user")
         return False, "Database error while deleting the account."
+
+# ---------------------------------------------------------------------------
+# INCIDENT DATABASE HELPERS
+# Uses the existing Supabase public.incidents table.
+# ---------------------------------------------------------------------------
+
+def find_incident_by_ref(client_ref):
+    """Find an incident by its unique client reference."""
+    if not client_ref:
+        return None
+
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    result = (
+        client.table("incidents")
+        .select("*")
+        .eq("client_ref", str(client_ref))
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def create_incident(
+    cam_id,
+    track_id,
+    elapsed_sec,
+    event,
+    created_at=None,
+    client_ref=None,
+):
+    """Create an incident and return (incident_id, created_at)."""
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    timestamp = created_at
+    if isinstance(timestamp, datetime):
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp = timestamp.isoformat()
+    elif timestamp is not None:
+        timestamp = str(timestamp)
+    else:
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+    row = {
+        "cam_id": str(cam_id),
+        "track_id": int(track_id) if track_id is not None else None,
+        "elapsed_sec": int(elapsed_sec or 0),
+        "event": str(event),
+        "created_at": timestamp,
+        "client_ref": str(client_ref) if client_ref else None,
+    }
+
+    result = client.table("incidents").insert(row).execute()
+    if not result.data:
+        raise RuntimeError("Supabase did not return the created incident.")
+
+    incident = result.data[0]
+    return incident["id"], incident["created_at"]
+
+
+def get_incident(incident_id):
+    """Return one incident or None."""
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    result = (
+        client.table("incidents")
+        .select("*")
+        .eq("id", int(incident_id))
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def set_incident_media(incident_id, snapshot_path=None):
+    """Save the storage path of an incident snapshot."""
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    update = {}
+    if snapshot_path is not None:
+        update["snapshot_path"] = snapshot_path
+
+    if not update:
+        return
+
+    client.table("incidents").update(update).eq(
+        "id", int(incident_id)
+    ).execute()
+
+
+def attach_video(incident_ids, path, mime):
+    """Attach a video storage path to one or more incidents."""
+    ids = list(dict.fromkeys(int(value) for value in (incident_ids or [])))
+    if not ids:
+        return
+
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    update = {
+        "video_path": path,
+        "video_mime": mime,
+        "video_state": "READY" if path else "UNAVAILABLE",
+    }
+
+    client.table("incidents").update(update).in_("id", ids).execute()
+
+
+def get_incident_blob(incident_id, kind):
+    """Return a stored snapshot/video blob and its MIME type, if present."""
+    if kind not in ("snapshot", "video"):
+        raise ValueError("kind must be 'snapshot' or 'video'")
+
+    row = get_incident(incident_id)
+    if not row:
+        return None, None
+
+    blob = row.get(kind)
+    mime = row.get("video_mime") if kind == "video" else "image/jpeg"
+
+    if isinstance(blob, memoryview):
+        blob = blob.tobytes()
+    elif isinstance(blob, bytearray):
+        blob = bytes(blob)
+    elif isinstance(blob, str) and blob.startswith("\\x"):
+        try:
+            blob = bytes.fromhex(blob[2:])
+        except ValueError:
+            blob = None
+
+    return blob, mime
+
+
+def list_incidents(limit=500):
+    """List recent incidents, newest first."""
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    result = (
+        client.table("incidents")
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(max(1, min(int(limit), 1000)))
+        .execute()
+    )
+    return result.data or []
+
+
+def list_incidents_for_day(day):
+    """List incidents whose created_at date matches YYYY-MM-DD."""
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    day_text = str(day)
+    start = f"{day_text}T00:00:00"
+    end = f"{(datetime.fromisoformat(day_text).date()).isoformat()}"
+
+    from datetime import timedelta
+    next_day = (
+        datetime.fromisoformat(end) + timedelta(days=1)
+    ).date().isoformat()
+
+    result = (
+        client.table("incidents")
+        .select("*")
+        .gte("created_at", start)
+        .lt("created_at", f"{next_day}T00:00:00")
+        .order("created_at", desc=True)
+        .limit(1000)
+        .execute()
+    )
+    return result.data or []
+
+
+def incident_counts_by_day():
+    """Return incident counts keyed by YYYY-MM-DD."""
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    result = (
+        client.table("incidents")
+        .select("created_at")
+        .limit(10000)
+        .execute()
+    )
+
+    counts = {}
+    for row in result.data or []:
+        created_at = row.get("created_at")
+        if not created_at:
+            continue
+
+        day = str(created_at)[:10]
+        counts[day] = counts.get(day, 0) + 1
+
+    return counts
+
+
+def media_path_in_use(path):
+    """Check whether another incident references this storage path."""
+    if not path:
+        return False
+
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    for column in ("snapshot_path", "video_path"):
+        result = (
+            client.table("incidents")
+            .select("id")
+            .eq(column, path)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return True
+
+    return False
+
+
+def delete_incident(incident_id):
+    """Delete an incident and return (deleted, referenced media paths)."""
+    client = _client()
+    if client is None:
+        raise RuntimeError("Supabase client is unavailable.")
+
+    incident_id = int(incident_id)
+    row = get_incident(incident_id)
+    if not row:
+        return False, []
+
+    paths = list(dict.fromkeys(
+        path for path in (
+            row.get("snapshot_path"),
+            row.get("video_path"),
+        ) if path
+    ))
+
+    client.table("incidents").delete().eq(
+        "id", incident_id
+    ).execute()
+
+    # Confirm deletion before allowing footage.py to remove stored media.
+    remaining = get_incident(incident_id)
+    return remaining is None, paths
