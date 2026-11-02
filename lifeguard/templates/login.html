@@ -1,3 +1,4 @@
+
 {% extends "base.html" %}
 {% from "_components.html" import brand, field, password_field with context %}
 
@@ -5,118 +6,183 @@
 
 {% block head %}
 <link rel="stylesheet" href="{{ asset('css/login.css') }}">
-<style>
-  /* Force sidebar to full dimensions */
-  aside.login-hero,
-  .login-hero {
-    position: relative !important;
-    width: 100% !important;
-    height: 100% !important;
-    min-height: 100vh !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    overflow: hidden !important;
-    background: none !important;
-    display: flex !important;
-    flex-direction: column !important;
-    justify-content: space-between !important;
-  }
-
-  /* Target the video tag and force absolute stretch across the entire sidebar */
-  aside.login-hero video,
-  .login-bg-video {
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    max-width: none !important;
-    max-height: none !important;
-    min-width: 100% !important;
-    min-height: 100% !important;
-    object-fit: cover !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    border: none !important;
-    border-radius: 0 !important;
-    z-index: 0 !important;
-  }
-
-  /* Dark overlay for contrast */
-  .login-hero-overlay {
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    background: rgba(11, 29, 58, 0.45) !important;
-    z-index: 1 !important;
-  }
-
-  /* Position text and logo layers above video */
-  aside.login-hero > *:not(.login-bg-video):not(.login-hero-overlay) {
-    position: relative !important;
-    z-index: 2 !important;
-  }
-
-  .login-hero .brand,
-  .login-hero-copy {
-    padding: 2.5rem !important;
-  }
-</style>
 {% endblock %}
 
 {% block body_class %}login-page{% endblock %}
 
 {% block body %}
-<aside class="login-hero">
-  <video class="login-bg-video" autoplay loop muted playsinline>
-    <source src="{{ asset('PoolVideoBackground.mp4') }}" type="video/mp4">
-  </video>
-  <div class="login-hero-overlay"></div>
 
-  {{ brand("lg") }}
+<aside class="login-hero">
+
+  <!-- Background pool video -->
+  <video
+    class="login-bg-video"
+    autoplay
+    muted
+    loop
+    playsinline
+    preload="metadata"
+    aria-hidden="true"
+    tabindex="-1"
+  >
+    <source
+      src="{{ asset('PoolVideoBackground.mp4') }}"
+      type="video/mp4"
+    >
+  </video>
+
+  <!-- Video readability overlay -->
+  <div class="login-hero-overlay" aria-hidden="true"></div>
+
+  <!-- Branding -->
+  <div class="login-hero-brand">
+    {{ brand("lg") }}
+  </div>
+
+  <!-- Decorative swimming lane -->
   <div class="login-rope" aria-hidden="true"></div>
+
+  <!-- Hero text -->
   <div class="login-hero-copy">
     <h2>Smart detection. Faster response. Safer swimming.</h2>
-    <p>Live pool monitoring that flags swimmers who stay in the water too long, so staff can step in early.</p>
+
+    <p>
+      Live pool monitoring that flags swimmers who stay
+      in the water too long, so staff can step in early.
+    </p>
   </div>
+
 </aside>
 
 <main class="login-main">
-  <div class="login-card">
-    <div class="login-mobile-brand">{{ brand("lg") }}</div>
-    <h1>Welcome back</h1>
-    <p class="lede">Log in to watch the pool, or request an account.</p>
 
-    <div class="tabs" role="tablist" aria-label="Account">
-      <button class="tab" role="tab" id="tab-login" aria-selected="true" aria-controls="panel-login">Log in</button>
-      <button class="tab" role="tab" id="tab-register" aria-selected="false" aria-controls="panel-register" tabindex="-1">Create account</button>
+  <div class="login-card">
+
+    <!-- Mobile branding -->
+    <div class="login-mobile-brand">
+      {{ brand("lg") }}
     </div>
 
-    <form id="panel-login" role="tabpanel" aria-labelledby="tab-login" novalidate>
-      {{ field("login-username", "Username", placeholder="Your username", autocomplete="username") }}
-      {{ password_field("login-password", "Password", placeholder="Your password") }}
-      <button class="btn btn-primary btn-block" type="submit">Log in</button>
+    <h1>Welcome back</h1>
+
+    <p class="lede">
+      Log in to watch the pool, or request an account.
+    </p>
+
+    <!-- Account tabs -->
+    <div class="tabs" role="tablist" aria-label="Account">
+
+      <button
+        class="tab"
+        role="tab"
+        id="tab-login"
+        aria-selected="true"
+        aria-controls="panel-login"
+      >
+        Log in
+      </button>
+
+      <button
+        class="tab"
+        role="tab"
+        id="tab-register"
+        aria-selected="false"
+        aria-controls="panel-register"
+        tabindex="-1"
+      >
+        Create account
+      </button>
+
+    </div>
+
+    <!-- Login form -->
+    <form
+      id="panel-login"
+      role="tabpanel"
+      aria-labelledby="tab-login"
+      novalidate
+    >
+
+      {{ field(
+        "login-username",
+        "Username",
+        placeholder="Your username",
+        autocomplete="username"
+      ) }}
+
+      {{ password_field(
+        "login-password",
+        "Password",
+        placeholder="Your password"
+      ) }}
+
+      <button
+        class="btn btn-primary btn-block"
+        type="submit"
+      >
+        Log in
+      </button>
+
     </form>
 
-    <form id="panel-register" role="tabpanel" aria-labelledby="tab-register" hidden novalidate>
-      {{ field("register-username", "Username", placeholder="3-30 letters, numbers, . _ -") }}
-      {{ password_field("register-password", "Password", placeholder="At least 8 characters", autocomplete="new-password") }}
+    <!-- Registration form -->
+    <form
+      id="panel-register"
+      role="tabpanel"
+      aria-labelledby="tab-register"
+      hidden
+      novalidate
+    >
+
+      {{ field(
+        "register-username",
+        "Username",
+        placeholder="3-30 letters, numbers, . _ -"
+      ) }}
+
+      {{ password_field(
+        "register-password",
+        "Password",
+        placeholder="At least 8 characters",
+        autocomplete="new-password"
+      ) }}
+
       <div class="field">
+
         <label for="register-role">Role</label>
+
         <select id="register-role" name="role">
           <option value="User">Lifeguard / staff</option>
           <option value="Administrator">Administrator</option>
         </select>
-        <p class="field-hint">An administrator must approve your account before you can log in.</p>
+
+        <p class="field-hint">
+          An administrator must approve your account
+          before you can log in.
+        </p>
+
       </div>
-      <button class="btn btn-primary btn-block" type="submit">Request account</button>
+
+      <button
+        class="btn btn-primary btn-block"
+        type="submit"
+      >
+        Request account
+      </button>
+
     </form>
 
-    <div id="message" class="message" hidden></div>
+    <!-- Feedback -->
+    <div
+      id="message"
+      class="message"
+      hidden
+    ></div>
+
   </div>
+
 </main>
+
 {% endblock %}
 
 {% block scripts %}

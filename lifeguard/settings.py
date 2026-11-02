@@ -198,3 +198,25 @@ def is_cloud():
         or os.environ.get("LIFEGUARD_CLOUD") == "1"
         or os.environ.get("IS_CLOUD", "").lower() in ("true", "1")
     )
+# --- Vision and recording configuration ---
+DEFAULT_STREAMS = {
+    "cam1": "http://192.168.1.62:81/stream",
+    "cam2": "http://192.168.1.72:81/stream",
+}
+
+MODEL_PATH = str(
+    BASE_DIR / "yolov8n.pt"
+    if (BASE_DIR / "yolov8n.pt").exists()
+    else "yolov8n.pt"
+)
+
+DETECTION_CONF = 0.30
+LOST_TRACK_GRACE_SEC = 4
+
+PRE_ROLL_SEC = 10
+POST_ROLL_SEC = 10
+
+EVENT_LOG_FILE = str(DATA_DIR / "pool_events.log")
+
+FOOTAGE_FOLDER_PREFIX = "AlertSaved-"
+FOOTAGE_FOLDER_DATE_FORMAT = "%m-%d-%y"
