@@ -1,4 +1,4 @@
-
+﻿
 {% extends "base.html" %}
 {% from "_components.html" import brand, field, password_field with context %}
 
@@ -26,7 +26,7 @@
     tabindex="-1"
   >
     <source
-      src="{{ asset('PoolVideoBackground.mp4') }}"
+      src="/PoolVideoBackground.mp4"
       type="video/mp4"
     >
   </video>
@@ -188,3 +188,4 @@
 {% block scripts %}
 <script src="{{ asset('js/login.js') }}"></script>
 {% endblock %}
+
