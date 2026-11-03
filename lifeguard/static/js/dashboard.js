@@ -152,21 +152,41 @@
     alarm.update(kind === 'danger');
   }
 
+  function setCameraOffline(cam) {
+    if (cam.chip) {
+      cam.chip.className = 'chip chip-offline';
+      cam.chip.textContent = 'Offline';
+    }
+    if (cam.inCount) cam.inCount.textContent = 0;
+    if (cam.outCount) cam.outCount.textContent = 0;
+    if (cam.updated) cam.updated.textContent = 'Offline';
+  }
+
+  function formatUpdated(value) {
+    const d = new Date(value);
+    if (!Number.isNaN(d.getTime())) return `Updated ${d.toLocaleTimeString()}`;
+    return `Updated ${String(value).slice(-8)}`;
+  }
+
+  const statusOf = (m) => (m.online === false ? 'OFFLINE' : (m.status || (m.online ? 'SAFE' : 'OFFLINE')));
+
   async function refreshStatus() {
     let stats;
     try {
       stats = await api('/api/stats');
     } catch (err) {
       if (err.status === 401) return;
-      showPanel('offline', 'Connection lost', "Can't reach the LifeGuard server. Trying again...");
+      cameras.forEach(setCameraOffline);
+      showPanel('offline', 'Connection lost', "Can't reach the LifeGuard server. Trying again...",
+        { pool: 0, side: 0, cams: `0/${cameras.length}` });
       return;
     }
 
     const rows = cameras.map((cam) => ({ cam, m: stats[cam.id] || (stats.cameras && stats.cameras[cam.id]) || {} }));
-    const status = (row) => row.m.status || (row.m.online ? 'SAFE' : 'OFFLINE');
 
     for (const { cam, m } of rows) {
-      const st = status({ m });
+      const st = statusOf(m);
+      if (st === 'OFFLINE') { setCameraOffline(cam); continue; }
       const [cls, label] = CHIPS[st] || CHIPS.OFFLINE;
       if (cam.chip) {
         cam.chip.className = `chip ${cls}`;
@@ -174,17 +194,19 @@
       }
       if (cam.inCount) cam.inCount.textContent = m.people_in_pool ?? 0;
       if (cam.outCount) cam.outCount.textContent = m.people_outside_pool ?? 0;
-      if (cam.updated) cam.updated.textContent = m.last_updated ? `Updated ${m.last_updated.slice(-8)}` : 'No data yet';
+      if (cam.updated) cam.updated.textContent = m.last_updated ? formatUpdated(m.last_updated) : 'No data yet';
     }
 
-    const online = rows.filter((r) => status(r) !== 'OFFLINE');
-    const danger = rows.filter((r) => status(r) === 'DANGER' || (r.m.submerged_count || 0) > 0);
-    const warning = rows.filter((r) => status(r) === 'WARNING');
+    // Only cameras that are really online contribute to the totals.
+    const online = rows.filter((r) => statusOf(r.m) !== 'OFFLINE');
+    const danger = online.filter((r) => statusOf(r.m) === 'DANGER' || (r.m.submerged_count || 0) > 0);
+    const warning = online.filter((r) => statusOf(r.m) === 'WARNING');
     const names = (list) => list.map((r) => r.cam.name).join(', ');
-    const counts = { pool: stats.total_in_pool ?? 0, side: stats.total_outside ?? 0, cams: `${online.length}/${cameras.length}` };
+    const sum = (key) => online.reduce((total, r) => total + (Number(r.m[key]) || 0), 0);
+    const counts = { pool: sum('people_in_pool'), side: sum('people_outside_pool'), cams: `${online.length}/${cameras.length}` };
 
     if (danger.length) {
-      const n = Math.max(1, stats.total_submerged || 0);
+      const n = Math.max(1, sum('submerged_count'));
       showPanel('danger', 'Drowning alert', `${plural(n, 'swimmer')} in the water too long. Check ${names(danger)} now.`, counts);
     } else if (warning.length) {
       showPanel('warn', 'Check the pool', `A swimmer has been in the water a long time (${names(warning)}).`, counts);
@@ -198,28 +220,49 @@
   }
 
   // ---------------------------------------------------------- live video feeds
+  // One request per camera at a time. The next one starts only after the previous
+  // image has loaded or failed, so a slow cloud response is never cancelled by the
+  // next refresh (that cancelling is what left the cloud feed black).
   const feedImages = $$('.cam-view img');
+  const FEED_INTERVAL_MS = 1000;
+  const FEED_TIMEOUT_MS = 8000;
 
-  function updateFeeds() {
-    if (document.hidden) return;
-    const now = Date.now();
-    for (const img of feedImages) {
-      let baseUrl = img.dataset.url;
-      if (!baseUrl) {
-        const rawSrc = img.getAttribute('src') || '';
-        if (rawSrc && !rawSrc.startsWith('undefined')) {
-          baseUrl = rawSrc.split('?')[0];
-          img.dataset.url = baseUrl;
-        }
-      }
-
-      if (baseUrl && baseUrl !== 'undefined') {
-        img.src = `${baseUrl}?t=${now}`;
-      }
+  function feedMessage(img) {
+    let msg = img.parentElement.querySelector('.feed-msg');
+    if (!msg) {
+      msg = document.createElement('div');
+      msg.className = 'feed-msg';
+      msg.textContent = 'Camera offline';
+      msg.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;' +
+        'color:#ffd700;font:600 1.1rem sans-serif;background:#0b1220;';
+      img.parentElement.appendChild(msg);
     }
+    return msg;
   }
 
-  setInterval(updateFeeds, 1000);
+  function runFeed(img) {
+    const base = img.dataset.url;
+    if (!base) return;
+    const next = () => setTimeout(() => runFeed(img), FEED_INTERVAL_MS);
+    if (document.hidden) { next(); return; }
+
+    const msg = feedMessage(img);
+    let settled = false;
+    const settle = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      img.style.visibility = ok ? 'visible' : 'hidden';   // never keep a frozen frame on error
+      msg.style.display = ok ? 'none' : 'flex';
+      next();
+    };
+    const watchdog = setTimeout(() => settle(false), FEED_TIMEOUT_MS);
+    img.onload = () => settle(true);
+    img.onerror = () => settle(false);
+    img.src = `${base}?t=${Date.now()}`;
+  }
+
+  feedImages.forEach(runFeed);
 
   poll(refreshStatus, STATUS_POLL_MS);
   if (!IS_ADMIN) return;

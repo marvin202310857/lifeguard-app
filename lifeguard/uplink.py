@@ -1,39 +1,27 @@
-"""Pool computer -> cloud server.
+"""Reliable pool-computer to cloud synchronization.
 
-While the system runs at the pool, this sends three things to the cloud copy of LifeGuard:
-
-* live numbers every 2 s (people counts, status) - the cloud answers which cameras someone is
-  watching, and only then are live pictures sent (a few small frames per second);
-* every alert: snapshot first, then the video clip, then "resolved";
-* all of it survives a dropped connection: alerts wait in a queue stored in the database and are
-  delivered in order once the internet is back.
-
-Configure with a "cloud" block in config.json or environment variables:
-    "cloud": {
-        "url": "https://your-app.onrender.com",
-        "key": "<ingest key>",
-        "site": "<site identifier>",
-        "frame_width": 640,
-        "frame_fps": 2
-    }
-Environment aliases supported: LIFEGUARD_CLOUD_URL / LIFEGUARD_REMOTE_URL,
-LIFEGUARD_CLOUD_KEY / LIFEGUARD_INGEST_KEY, and LIFEGUARD_SITE.
+Heartbeats and small processed JPEG frames are sent to the Vercel API.
+Incident snapshots and videos are uploaded directly to Supabase Storage, so
+large media never passes through Vercel's function request-body limit. The
+local outbox remains the source of retry order for incident events.
 """
+
 import json
 import logging
 import os
+import re
 import threading
 import time
 
 import requests
 
-from . import db, footage, registry
-from . import settings as cfg
+from . import db, footage, registry, settings as cfg, storage
 
 log = logging.getLogger("lifeguard.uplink")
 
 HEARTBEAT_SEC = 2
-RETRY_STATUSES = {401, 403, 408, 425, 429}      # plus every 5xx: try again later
+RETRY_STATUSES = {401, 403, 408, 425, 429}
+ZERO_METRICS = {"people_in_pool": 0, "people_outside_pool": 0, "submerged_count": 0}
 
 
 class UplinkError(Exception):
@@ -43,25 +31,20 @@ class UplinkError(Exception):
 
 
 def _settings():
-    """Return validated uplink settings, or None when cloud sync is not configured.
-
-    Never start background threads with incomplete credentials. Supports the
-    existing settings helper and the documented config.json/environment aliases.
-    """
+    """Return validated edge-to-cloud settings, or None if disabled."""
     try:
         raw = cfg.cloud_settings()
     except Exception:
-        log.exception("could not load cloud uplink settings")
+        log.exception("Could not load cloud uplink settings")
         raw = None
 
     if not isinstance(raw, dict):
         raw = {}
 
-    # Also read the documented `cloud` block directly, without changing config.
     try:
         config = cfg.load_config()
     except Exception:
-        log.exception("could not load LifeGuard configuration")
+        log.exception("Could not load LifeGuard configuration")
         config = {}
 
     cloud = config.get("cloud", {}) if isinstance(config, dict) else {}
@@ -104,15 +87,19 @@ def _settings():
         return None
 
     url = url.rstrip("/")
-    if not url.startswith(("https://", "http://localhost", "http://127.0.0.1")):
-        log.warning("cloud uplink URL must use HTTPS except for localhost; uplink disabled")
+    if not (
+        url.startswith("https://")
+        or url.startswith("http://localhost:")
+        or url.startswith("http://127.0.0.1:")
+    ):
+        log.warning("Cloud uplink URL must use HTTPS except for localhost; uplink disabled")
         return None
 
     try:
         frame_width = int(cloud.get("frame_width", raw.get("frame_width", 640)))
-        frame_fps = float(cloud.get("frame_fps", raw.get("frame_fps", 2)))
+        frame_fps = float(cloud.get("frame_fps", raw.get("frame_fps", 2.0)))
     except (TypeError, ValueError):
-        log.warning("invalid cloud frame_width/frame_fps; using safe defaults")
+        log.warning("Invalid cloud frame_width/frame_fps; using defaults")
         frame_width, frame_fps = 640, 2.0
 
     return {
@@ -129,27 +116,59 @@ def enabled():
 
 
 def enqueue(kind, incident_id):
-    """Queue an alert event ('incident', 'video' or 'resolve') for delivery. No-op when not configured."""
+    """Queue an incident, video, or resolve event for cloud delivery."""
     if not enabled():
         return
     try:
         db.outbox_add(kind, incident_id)
     except Exception:
-        log.exception("could not queue %s for incident %s", kind, incident_id)
+        log.exception("Could not queue %s for incident %s", kind, incident_id)
 
 
 def shrink(jpeg, width):
-    """Smaller, lighter copy of a frame for the internet."""
+    """Create a lower-bandwidth JPEG copy for live cloud viewing."""
     import cv2
     import numpy as np
+
     image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         return jpeg
-    h, w = image.shape[:2]
-    if w > width:
-        image = cv2.resize(image, (width, max(1, int(h * width / w))), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 60])
-    return buf.tobytes() if ok else jpeg
+    height, current_width = image.shape[:2]
+    if current_width > width:
+        image = cv2.resize(
+            image,
+            (width, max(1, int(height * width / current_width))),
+            interpolation=cv2.INTER_AREA,
+        )
+    ok, buffer = cv2.imencode(
+        ".jpg",
+        image,
+        [cv2.IMWRITE_JPEG_QUALITY, 60],
+    )
+    return buffer.tobytes() if ok else jpeg
+
+
+def _safe_path_part(value):
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "item"))[:100].strip(".-_") or "item"
+
+
+def _camera_state(worker):
+    """Metrics for the cloud: zeroed and marked offline unless frames are really arriving."""
+    snap = getattr(worker, "snapshot", None)  # provided by the worker.py patch
+    if callable(snap):
+        try:
+            state = dict(snap())
+        except Exception:
+            log.exception("Could not read camera snapshot")
+            state = {"online": False}
+    else:  # fallback if worker.py isn't patched yet
+        state = dict(worker.metrics or {})
+        state["online"] = state.get("status") != "OFFLINE"
+    if not state.get("online"):
+        state.update(ZERO_METRICS)
+        state["status"] = "OFFLINE"
+        state["online"] = False
+    return state
 
 
 class Uplink:
@@ -157,29 +176,32 @@ class Uplink:
         self.settings = settings or _settings()
         if not isinstance(self.settings, dict):
             raise ValueError("Cloud uplink is not configured; check URL, key, and site.")
-        required = ("url", "key", "site")
-        missing = [name for name in required if not self.settings.get(name)]
+        missing = [name for name in ("url", "key", "site") if not self.settings.get(name)]
         if missing:
             raise ValueError("Cloud uplink settings missing: " + ", ".join(missing))
+
         self.settings.setdefault("frame_width", 640)
         self.settings.setdefault("frame_fps", 2.0)
         self._stop = threading.Event()
         self._wanted = set()
+        self._last_logged_wanted = None
         self._frame_seq = {}
         self._last_warning = 0.0
         self.connected = False
 
-    # ---- plumbing
+    # Plumbing ----------------------------------------------------------------
     def session(self):
-        s = requests.Session()
-        s.headers["Authorization"] = f"Bearer {self.settings['key']}"
-        return s
+        session = requests.Session()
+        session.headers["Authorization"] = f"Bearer {self.settings['key']}"
+        bypass = os.environ.get("LIFEGUARD_VERCEL_BYPASS")
+        if bypass:
+            session.headers["x-vercel-protection-bypass"] = bypass
+        return session
 
     def url(self, path):
         return f"{self.settings['url']}{path}"
 
     def _warn(self, message):
-        """Log a connection problem at most once a minute."""
         if time.time() - self._last_warning > 60:
             self._last_warning = time.time()
             log.warning("%s", message)
@@ -188,27 +210,58 @@ class Uplink:
     def _check(response):
         status = response.status_code
         if status >= 500 or status in RETRY_STATUSES:
-            raise UplinkError(f"cloud answered {status}", temporary=True)
+            text = response.text or ""
+            hint = ""
+            if "Authentication Required" in text or "vercel.com/sso" in text:
+                hint = " (Vercel Deployment Protection)"
+            raise UplinkError(
+                f"cloud answered {status}{hint}: {text[:80]!r}",
+                temporary=True,
+            )
         if status >= 400:
-            raise UplinkError(f"cloud rejected the request ({status}): {response.text[:120]}", temporary=False)
+            raise UplinkError(
+                f"cloud rejected request ({status}): {response.text[:160]}",
+                temporary=False,
+            )
 
-    # ---- live numbers and pictures
+    # Live metrics and processed frames --------------------------------------
     def heartbeat_once(self, session):
         cameras = {}
-        for cam_id, worker in registry.workers.items():
-            cameras[cam_id] = {**worker.metrics, "alerts": worker.active_alerts()}
+        for cam_id, worker in list(registry.workers.items()):
+            try:
+                alerts = worker.active_alerts()
+            except Exception:
+                alerts = []
+            cameras[cam_id] = {**_camera_state(worker), "alerts": alerts}
+
         try:
-            response = session.post(self.url("/api/ingest/heartbeat"),
-                                    json={"site": self.settings["site"], "cameras": cameras}, timeout=(5, 10))
+            response = session.post(
+                self.url("/api/ingest/heartbeat"),
+                json={"site": self.settings["site"], "cameras": cameras},
+                timeout=(5, 10),
+            )
             self._check(response)
-        except (requests.RequestException, UplinkError) as exc:
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise UplinkError("cloud returned an invalid heartbeat response", True)
+        except (requests.RequestException, ValueError, UplinkError) as exc:
             self.connected = False
             self._warn(f"cloud not reachable: {exc}")
             return False
+
         if not self.connected:
-            log.info("connected to the cloud server %s", self.settings["url"])
+            log.info("Connected to cloud server %s", self.settings["url"])
         self.connected = True
-        self._wanted = set(response.json().get("frames", []))
+        self._wanted = {
+            cam_id for cam_id in payload.get("frames", [])
+            if cam_id in registry.workers
+        }
+
+        # Debug: logged only when the list changes, so it doesn't spam every 2 s.
+        current = sorted(self._wanted)
+        if current != self._last_logged_wanted:
+            self._last_logged_wanted = current
+            log.info("cloud wants frames for: %s", current)
         return True
 
     def send_frames_once(self, session):
@@ -217,99 +270,195 @@ class Uplink:
             worker = registry.workers.get(cam_id)
             if worker is None:
                 continue
-            jpeg, seq = worker.latest_jpeg()
-            if seq == self._frame_seq.get(cam_id):
-                continue                                   # nothing new since the last upload
-            self._frame_seq[cam_id] = seq
+
+            # Never upload the "OFFLINE" placeholder image as if it were live video.
+            is_online = getattr(worker, "is_online", None)
+            if callable(is_online) and not is_online():
+                continue
+
+            jpeg, sequence = worker.latest_jpeg()
+            if not jpeg or sequence == self._frame_seq.get(cam_id):
+                continue
+
+            frame = shrink(jpeg, self.settings["frame_width"])
+            if len(frame) > 900_000:
+                self._warn(f"Frame for {cam_id} exceeds the 900 KB upload limit; skipping it")
+                continue
+
             try:
                 response = session.post(
                     self.url(f"/api/ingest/frame/{cam_id}"),
-                    data=shrink(jpeg, self.settings["frame_width"]),
+                    data=frame,
                     headers={"Content-Type": "image/jpeg"},
                     timeout=(5, 10),
                 )
                 self._check(response)
+                self._frame_seq[cam_id] = sequence
                 sent += 1
             except (requests.RequestException, UplinkError) as exc:
-                self._warn(f"frame upload failed for {cam_id}: {exc}")
+                self._warn(f"Frame upload failed for {cam_id}: {exc}")
                 break
         return sent
 
-    # ---- alerts
+    # Incident media ----------------------------------------------------------
     def _incident_ref(self, row):
-        return f"{self.settings['site']}-{row['created_at']}-{row['id']}"   # unique even if ids restart
+        # New local incidents persist client_ref before enqueueing, allowing
+        # the cloud API to update the same Supabase row instead of duplicating it.
+        try:
+            full_row = db.get_incident(row["id"])
+            if full_row and full_row.get("client_ref"):
+                return str(full_row["client_ref"])
+        except Exception:
+            log.exception("Could not read incident client_ref for %s", row.get("id"))
+        # Compatibility for incidents created before client_ref was added.
+        return f"{self.settings['site']}-{row['created_at']}-{row['id']}"
+
+    def _snapshot_to_storage(self, row, client_ref):
+        media = footage.open_media(row["id"], "snapshot")
+        if not media:
+            return None
+
+        source, data = media[0], media[1]
+        if source == "file":
+            snapshot = data.read_bytes()
+        elif source == "blob":
+            snapshot = bytes(data)
+        elif source == "cloud":
+            snapshot = storage.download_bytes(data)
+        else:
+            return None
+
+        if not snapshot:
+            return None
+
+        cam_id = _safe_path_part(row["cam_id"])
+        ref_part = _safe_path_part(client_ref)
+        destination = f"incidents/{cam_id}/edge/{ref_part}/snapshot.jpg"
+        return storage.upload_bytes(destination, snapshot, "image/jpeg", upsert=True)
 
     def _send_incident(self, session, item):
         row = db.get_incident_for_upload(item["incident_id"])
         if not row:
-            return                                          # deleted at the pool before it was sent
-        media = footage.open_media(row["id"], "snapshot")
-        snapshot = None
-        if media:
-            snapshot = media[1].read_bytes() if media[0] == "file" else media[1]
-        meta = {"cam_id": row["cam_id"], "track_id": row["track_id"], "elapsed_sec": row["elapsed_sec"],
-                "event": row["event"], "created_at": row["created_at"], "client_ref": self._incident_ref(row)}
-        files = {"snapshot": ("snapshot.jpg", snapshot, "image/jpeg")} if snapshot else None
-        response = session.post(self.url("/api/ingest/incident"), data={"meta": json.dumps(meta)},
-                                files=files, timeout=(5, 30))
+            return
+
+        client_ref = self._incident_ref(row)
+        snapshot_path = self._snapshot_to_storage(row, client_ref)
+        meta = {
+            "cam_id": row["cam_id"],
+            "track_id": row.get("track_id"),
+            "elapsed_sec": row.get("elapsed_sec", 0),
+            "event": row.get("event", "Drowning Risk Detected"),
+            "created_at": row["created_at"],
+            "client_ref": client_ref,
+            "snapshot_path": snapshot_path,
+            "alert_level": "DANGER",
+        }
+
+        response = session.post(
+            self.url("/api/ingest/incident"),
+            json={"site": self.settings["site"], "meta": meta},
+            timeout=(5, 30),
+        )
         self._check(response)
-        db.map_set(row["id"], response.json()["id"])
+        cloud_id = response.json().get("id")
+        if cloud_id is None:
+            raise UplinkError("cloud did not return an incident ID", temporary=True)
+        db.map_set(row["id"], cloud_id)
 
     def _cloud_id(self, item):
         cloud_id = db.map_get(item["incident_id"])
         if cloud_id is None:
             if db.outbox_has("incident", item["incident_id"]):
-                raise UplinkError("the incident itself has not been sent yet", temporary=True)
-            raise UplinkError("the incident was never accepted by the cloud", temporary=False)
+                raise UplinkError("incident has not been sent yet", temporary=True)
+            raise UplinkError("incident was never accepted by the cloud", temporary=False)
         return cloud_id
 
     def _send_video(self, session, item):
         cloud_id = self._cloud_id(item)
         media = footage.open_media(item["incident_id"], "video")
         if not media:
-            return                                          # clip no longer exists: nothing to send
-        if media[0] == "file":
-            with open(media[1], "rb") as handle:
-                response = session.post(self.url(f"/api/ingest/incident/{cloud_id}/video"), data=handle,
-                                        headers={"Content-Type": "video/mp4"}, timeout=(5, 300))
+            return
+
+        source, data, mime = media
+        incident = db.get_incident(item["incident_id"])
+        if not incident:
+            raise UplinkError("local incident no longer exists", temporary=False)
+
+        cam_id = _safe_path_part(incident["cam_id"])
+        destination = f"incidents/{cam_id}/cloud-{int(cloud_id)}/video.mp4"
+
+        # Upload the video directly to Supabase. Do not send clip bytes through
+        # Vercel Functions, which enforce a 4.5 MB request-body limit.
+        if source == "file":
+            storage.upload_file(data, destination, mime or "video/mp4", upsert=True)
+        elif source == "blob":
+            storage.upload_bytes(destination, bytes(data), mime or "video/mp4", upsert=True)
+        elif source == "cloud":
+            # Already stored in the shared bucket; reuse the existing object path.
+            destination = data
         else:
-            response = session.post(self.url(f"/api/ingest/incident/{cloud_id}/video"), data=media[1],
-                                    headers={"Content-Type": "video/mp4"}, timeout=(5, 300))
+            raise UplinkError(f"unsupported video media source: {source}", temporary=False)
+
+        response = session.post(
+            self.url(f"/api/ingest/incident/{cloud_id}/video"),
+            json={
+                "site": self.settings["site"],
+                "storage_path": destination,
+                "mime": mime or "video/mp4",
+            },
+            timeout=(5, 30),
+        )
         self._check(response)
 
     def _send_resolve(self, session, item):
         cloud_id = self._cloud_id(item)
-        response = session.post(self.url(f"/api/ingest/incident/{cloud_id}/resolve"),
-                                json={"resolved_at": db.now_str()}, timeout=(5, 15))
+        response = session.post(
+            self.url(f"/api/ingest/incident/{cloud_id}/resolve"),
+            json={
+                "site": self.settings["site"],
+                "resolved_at": db.now_str(),
+            },
+            timeout=(5, 15),
+        )
         self._check(response)
 
     def process_outbox_once(self, session):
-        """Deliver the oldest queued item. -> 'idle' | 'sent' | 'retry' | 'dropped'"""
+        """Deliver the oldest item: idle, sent, retry, or dropped."""
         item = db.outbox_next()
         if not item:
             return "idle"
-        handler = {"incident": self._send_incident, "video": self._send_video,
-                   "resolve": self._send_resolve}.get(item["kind"])
+
+        handler = {
+            "incident": self._send_incident,
+            "video": self._send_video,
+            "resolve": self._send_resolve,
+        }.get(item["kind"])
+
         try:
             if handler is None:
-                raise UplinkError(f"unknown item {item['kind']}", temporary=False)
+                raise UplinkError(f"unknown outbox item kind: {item['kind']}", False)
             handler(session, item)
         except UplinkError as exc:
             if exc.temporary:
                 db.outbox_failed(item["id"])
-                self._warn(f"will retry {item['kind']} for incident {item['incident_id']}: {exc}")
+                self._warn(f"Will retry {item['kind']} for incident {item['incident_id']}: {exc}")
                 return "retry"
-            log.error("dropping %s for incident %s: %s", item["kind"], item["incident_id"], exc)
+            log.error("Dropping %s for incident %s: %s", item["kind"], item["incident_id"], exc)
             db.outbox_done(item["id"])
             return "dropped"
         except requests.RequestException as exc:
             db.outbox_failed(item["id"])
-            self._warn(f"will retry {item['kind']} for incident {item['incident_id']}: {exc}")
+            self._warn(f"Will retry {item['kind']} for incident {item['incident_id']}: {exc}")
             return "retry"
+        except Exception as exc:
+            db.outbox_failed(item["id"])
+            self._warn(f"Will retry {item['kind']} for incident {item['incident_id']}: {exc}")
+            return "retry"
+
         db.outbox_done(item["id"])
         return "sent"
 
-    # ---- background threads
+    # Background loops --------------------------------------------------------
     def _heartbeat_loop(self):
         session = self.session()
         while not self._stop.is_set():
@@ -320,12 +469,12 @@ class Uplink:
         session = self.session()
         interval = 1.0 / max(0.5, self.settings["frame_fps"])
         while not self._stop.is_set():
-            watched = bool(self._wanted)                   # nobody watching -> no pictures, no bandwidth
+            watched = bool(self._wanted)
             if watched:
                 try:
                     self.send_frames_once(session)
                 except Exception:
-                    log.exception("sending frames failed")
+                    log.exception("Sending live frames failed")
             self._stop.wait(interval if watched else 0.5)
 
     def _outbox_loop(self):
@@ -335,8 +484,9 @@ class Uplink:
             try:
                 result = self.process_outbox_once(session)
             except Exception:
-                log.exception("uplink queue error")
+                log.exception("Uplink queue error")
                 result = "retry"
+
             if result == "retry":
                 failures += 1
                 self._stop.wait(min(60, 2 ** min(failures, 6)))
@@ -345,29 +495,33 @@ class Uplink:
                 self._stop.wait(1 if result == "idle" else 0)
 
     def start(self):
-        for target, name in ((self._heartbeat_loop, "uplink-heartbeat"), (self._frames_loop, "uplink-frames"),
-                             (self._outbox_loop, "uplink-queue")):
+        targets = (
+            (self._heartbeat_loop, "uplink-heartbeat"),
+            (self._frames_loop, "uplink-frames"),
+            (self._outbox_loop, "uplink-queue"),
+        )
+        for target, name in targets:
             threading.Thread(target=target, daemon=True, name=name).start()
-        log.info("uploading to %s as '%s'", self.settings["url"], self.settings["site"])
+        log.info("Uploading LifeGuard data to %s as '%s'", self.settings["url"], self.settings["site"])
 
     def stop(self):
         self._stop.set()
 
 
 _instance = None
+_instance_lock = threading.Lock()
 
 
 def start():
-    """Start sending to the cloud if it is configured."""
+    """Start the cloud uploader once when valid settings are present."""
     global _instance
-    if _instance is None:
+    with _instance_lock:
+        if _instance is not None:
+            return _instance
         settings = _settings()
         if settings is None:
-            log.info(
-                "cloud uplink disabled: configure cloud URL, ingest key, and site "
-                "in config.json or environment variables"
-            )
+            log.info("Cloud uplink disabled: configure URL, key, and site.")
             return None
         _instance = Uplink(settings)
         _instance.start()
-    return _instance
+        return _instance

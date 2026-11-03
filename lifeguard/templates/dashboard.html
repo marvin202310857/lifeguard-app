@@ -133,28 +133,4 @@
 
 {% block scripts %}
 <script src="{{ asset('js/dashboard.js') }}"></script>
-<script>
-  function pollOccupancy() {
-    fetch('/api/occupancy')
-      .then(res => res.ok ? res.json() : null)
-      .then(data => {
-        if (!data) return;
-        const poolElem = document.getElementById('count-pool');
-        const sideElem = document.getElementById('count-side');
-        if (poolElem) poolElem.innerText = data.people_in_pool || 0;
-        if (sideElem) sideElem.innerText = data.people_poolside || 0;
-
-        const targetCam = document.querySelector(`.cam[data-cam="${data.camera_id || 'cam1'}"]`);
-        if (targetCam) {
-          const inNode = targetCam.querySelector('[data-role="in"]');
-          const outNode = targetCam.querySelector('[data-role="out"]');
-          const updateNode = targetCam.querySelector('[data-role="updated"]');
-          if (inNode) inNode.innerText = data.people_in_pool || 0;
-          if (outNode) outNode.innerText = data.people_poolside || 0;
-          if (updateNode) updateNode.innerText = 'Updated ' + (data.timestamp || '');
-        }
-      }).catch(err => console.debug("Occupancy sync error:", err));
-  }
-  setInterval(pollOccupancy, 3000);
-</script>
 {% endblock %}
