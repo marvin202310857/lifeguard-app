@@ -5,10 +5,78 @@
   const $ = (id) => document.getElementById(id);
 
   const MIN_PASSWORD = 8;
-  const tabs = { login: $('tab-login'), register:$('tab-register') };
-  const panels = { login: $('panel-login'), register:$('panel-register') };
+  const tabs = { login: $('tab-login'), register: $('tab-register') };
+  const panels = { login: $('panel-login'), register: $('panel-register') };
   const box = $('message');
 
+  /* ---------- Password show / hide ----------
+     One eye button per password field, built here so it never depends on the template's own
+     markup. Any icon or button the template already placed next to the field is hidden, so only
+     one eye can ever show (and the browser's built-in reveal icon is hidden in login.css). */
+  const EYE_ICONS =
+    '<svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>' +
+    '<svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>' +
+    '<line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
+  const passwordToggles = [];
+
+  function setRevealed(entry, revealed) {
+    entry.input.type = revealed ? 'text' : 'password';
+    entry.button.classList.toggle('is-visible', revealed);
+    entry.button.setAttribute('aria-label', revealed ? 'Hide password' : 'Show password');
+    entry.button.setAttribute('aria-pressed', String(revealed));
+  }
+
+  function hideAllPasswords() {
+    passwordToggles.forEach((entry) => setRevealed(entry, false));
+  }
+
+  function setupPasswordToggles() {
+    document.querySelectorAll('input[type="password"]').forEach((input) => {
+      if (input.dataset.pwReady) return;
+      input.dataset.pwReady = '1';
+
+      // Hide whatever eye icon/button the template already put in this field (no duplicates).
+      const field = input.closest('.field, .password-field, .input-group') || input.parentElement;
+      field.querySelectorAll('button, svg, i, img, [class*="eye"], [class*="toggle"], [class*="reveal"]')
+        .forEach((el) => {
+          if (el.contains(input) || el.querySelector('input')) return;   // never hide the input itself
+          el.classList.add('pw-hidden-original');
+        });
+
+      const wrap = document.createElement('div');
+      wrap.className = 'pw-wrap';
+      input.parentNode.insertBefore(wrap, input);
+      wrap.appendChild(input);
+      input.classList.add('pw-input');
+
+      const button = document.createElement('button');
+      button.type = 'button';                       // must never submit the form
+      button.className = 'pw-toggle';
+      button.innerHTML = EYE_ICONS;
+      wrap.appendChild(button);
+
+      const entry = { input, button };
+      passwordToggles.push(entry);
+      setRevealed(entry, false);
+
+      button.addEventListener('mousedown', (event) => event.preventDefault());   // keep focus in the field
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setRevealed(entry, input.type === 'password');
+        input.focus();
+        const end = input.value.length;
+        try { input.setSelectionRange(end, end); } catch (_) { /* not supported while hidden */ }
+      });
+    });
+  }
+
+  /* ---------- Messages and tabs ---------- */
   function showMessage(text, isError) {
     box.className = `message ${isError ? 'message-error' : 'message-success'}`;
     box.setAttribute('role', isError ? 'alert' : 'status');
@@ -23,6 +91,7 @@
       tabs[key].tabIndex = active ? 0 : -1;
       panels[key].hidden = !active;
     }
+    hideAllPasswords();
     box.hidden = true;
   }
 
@@ -36,36 +105,7 @@
     });
   }
 
-  /* Password visibility toggle handler */
-  document.addEventListener('click', (event) => {
-    const toggleBtn = event.target.closest('.toggle-password, [data-toggle-password], .password-toggle');
-    if (!toggleBtn) return;
-
-    const field = toggleBtn.closest('.field, .password-field, .input-group') || toggleBtn.parentElement;
-    const input = field.querySelector('input[type="password"], input[type="text"]');
-    if (!input) return;
-
-    const isHidden = input.type === 'password';
-    input.type = isHidden ? 'text' : 'password';
-
-    // Toggle button active class for CSS icon switching or inline SVG/i updates
-    toggleBtn.classList.toggle('is-visible', isHidden);
-    toggleBtn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password');
-
-    // Update icon class if standard FontAwesome/Feather icons are used
-    const icon = toggleBtn.querySelector('i, svg');
-    if (icon) {
-      if (isHidden) {
-        // Password revealed -> show closed eye (click to hide)
-        icon.classList.remove('fa-eye', 'icon-eye', 'eye-open');
-        icon.classList.add('fa-eye-slash', 'icon-eye-off', 'eye-closed');
-      } else {
-        // Password masked -> show open eye (click to view)
-        icon.classList.remove('fa-eye-slash', 'icon-eye-off', 'eye-closed');
-        icon.classList.add('fa-eye', 'icon-eye', 'eye-open');
-      }
-    }
-  });
+  setupPasswordToggles();
 
   /** Run a submit handler with the button disabled and a friendly network-error fallback. */
   function onSubmit(form, handler) {
