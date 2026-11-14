@@ -15,5 +15,5 @@ footage/
 uploads/
 recordings/
 sample_pool_video.mp4
-
 !public/PoolVideoBackground.mp4
+!lifeguard/static/PoolVideoBackground.mp4
