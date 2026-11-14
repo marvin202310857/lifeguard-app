@@ -1050,6 +1050,25 @@ def media_path_in_use(relative_path):
     return bool(result.data)
 
 
+def _local_tz():
+    from datetime import timedelta
+    offset = int(os.environ.get("LIFEGUARD_TZ_OFFSET_HOURS", "8"))
+    return timezone(timedelta(hours=offset))
+
+
+def _local_day_str(iso_ts):
+    raw = str(iso_ts or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_local_tz()).date().isoformat()
+    except ValueError:
+        return raw[:10]
+
+
 def incident_counts_by_day():
     """Return incident totals grouped by calendar date."""
     result = (
@@ -1064,7 +1083,9 @@ def incident_counts_by_day():
         if not created_at:
             continue
 
-        day = str(created_at)[:10]
+        day = _local_day_str(created_at)
+        if not day:
+            continue
         counts[day] = counts.get(day, 0) + 1
 
     return counts
@@ -1364,7 +1385,7 @@ def list_incidents_for_day(day):
             selected_date.year,
             selected_date.month,
             selected_date.day,
-            tzinfo=timezone.utc,
+            tzinfo=_local_tz(),
         )
 
         end = start.replace(day=1)

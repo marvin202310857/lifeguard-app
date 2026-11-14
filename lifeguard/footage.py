@@ -20,7 +20,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import db, storage
@@ -66,8 +66,13 @@ def root():
     return Path(cfg.FOOTAGE_DIR)
 
 
+def local_tz():
+    offset = int(os.environ.get("LIFEGUARD_TZ_OFFSET_HOURS", "8"))
+    return timezone(timedelta(hours=offset))
+
+
 def today():
-    return date.today()
+    return datetime.now(local_tz()).date()
 
 
 def is_valid_day(value):
