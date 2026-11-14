@@ -13,7 +13,7 @@ from lifeguard import __version__, admin, auth, db, footage, ingest, live, pages
 from lifeguard import settings as cfg
 
 CSP = (
-    "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
+    "default-src 'self'; img-src 'self' data: blob: https://*.supabase.co; media-src 'self' blob: https://*.supabase.co; "
     "style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self';"
     " frame-ancestors 'none'"
 )
