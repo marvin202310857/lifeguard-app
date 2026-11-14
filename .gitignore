@@ -22,3 +22,5 @@ recordings/
 .env
 .env.*
 !.env.example
+
+!public/PoolVideoBackground.mp4

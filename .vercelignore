@@ -15,3 +15,5 @@ footage/
 uploads/
 recordings/
 sample_pool_video.mp4
+
+!public/PoolVideoBackground.mp4
