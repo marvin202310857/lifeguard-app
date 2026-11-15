@@ -1,193 +1,275 @@
+/* =========================================
+   LIFEGUARD LOGIN PAGE
+========================================= */
 
-{% extends "base.html" %}
-{% from "_components.html" import brand, field, password_field with context %}
+.login-page {
+    display: flex;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+    background: #f8fafc;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont,
+        'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+}
 
-{% block title %}LifeGuard - Log in{% endblock %}
+/* =========================================
+   LEFT PANEL - VIDEO BACKGROUND
+========================================= */
 
-{% block head %}
-<link rel="stylesheet" href="{{ asset('css/login.css') }}">
-{% endblock %}
+.login-hero {
+    position: relative;
+    isolation: isolate;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-width: 0;
+    min-height: 100vh;
+    overflow: hidden;
+    padding: 0;
+    margin: 0;
 
-{% block body_class %}login-page{% endblock %}
+    /* Fallback when video is unavailable */
+    background: #063b59;
+}
 
-{% block body %}
+/* Background video */
 
-<aside class="login-hero">
+.login-bg-video {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
 
-  <!-- Background pool video -->
-  <video
-    class="login-bg-video"
-    autoplay
-    muted
-    loop
-    playsinline
-    preload="metadata"
-    aria-hidden="true"
-    tabindex="-1"
-  >
-    <source
-    
-  src="/public/PoolVideoBackground.mp4"
-  type="video/mp4"
-    >
-    
-  </video>
+    display: block;
+    width: 100%;
+    height: 100%;
 
-  <!-- Video readability overlay -->
-  <div class="login-hero-overlay" aria-hidden="true"></div>
+    object-fit: cover;
+    object-position: center;
 
-  <!-- Branding -->
-  <div class="login-hero-brand">
-    {{ brand("lg") }}
-  </div>
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
 
-  <!-- Decorative swimming lane -->
-  <div class="login-rope" aria-hidden="true"></div>
+    pointer-events: none;
+}
 
-  <!-- Hero text -->
-  <div class="login-hero-copy">
-    <h2>Smart detection. Faster response. Safer swimming.</h2>
+/* Dark cinematic overlay */
 
-    <p>
-      Live pool monitoring that flags swimmers who stay
-      in the water too long, so staff can step in early.
-    </p>
-  </div>
+.login-hero-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
 
-</aside>
+    background:
+        linear-gradient(
+            180deg,
+            rgba(0, 30, 55, 0.35) 0%,
+            rgba(0, 25, 45, 0.45) 45%,
+            rgba(0, 15, 30, 0.82) 100%
+        );
 
-<main class="login-main">
+    pointer-events: none;
+}
 
-  <div class="login-card">
+/* All foreground content */
 
-    <!-- Mobile branding -->
-    <div class="login-mobile-brand">
-      {{ brand("lg") }}
-    </div>
+.login-hero-brand,
+.login-hero-copy,
+.login-rope {
+    position: relative;
+    z-index: 2;
+}
 
-    <h1>Welcome back</h1>
+/* Branding */
 
-    <p class="lede">
-      Log in to watch the pool, or request an account.
-    </p>
+.login-hero-brand {
+    padding: 2.5rem;
+}
 
-    <!-- Account tabs -->
-    <div class="tabs" role="tablist" aria-label="Account">
+.login-hero-brand .brand {
+    color: #ffffff;
+}
 
-      <button
-        class="tab"
-        role="tab"
-        id="tab-login"
-        aria-selected="true"
-        aria-controls="panel-login"
-      >
-        Log in
-      </button>
+/* Hero description */
 
-      <button
-        class="tab"
-        role="tab"
-        id="tab-register"
-        aria-selected="false"
-        aria-controls="panel-register"
-        tabindex="-1"
-      >
-        Create account
-      </button>
+.login-hero-copy {
+    padding: 2.5rem;
+    color: #ffffff;
+}
 
-    </div>
+.login-hero-copy h2 {
+    max-width: 650px;
+    margin: 0 0 1rem;
+    color: #ffffff;
+    font-size: clamp(1.7rem, 2.5vw, 2.5rem);
+    font-weight: 700;
+    line-height: 1.2;
+}
 
-    <!-- Login form -->
-    <form
-      id="panel-login"
-      role="tabpanel"
-      aria-labelledby="tab-login"
-      novalidate
-    >
+.login-hero-copy p {
+    max-width: 520px;
+    margin: 0;
+    color: #ffffff;
+    font-size: 1.1rem;
+    line-height: 1.6;
+    opacity: 0.96;
+}
 
-      {{ field(
-        "login-username",
-        "Username",
-        placeholder="Your username",
-        autocomplete="username"
-      ) }}
+/* =========================================
+   RIGHT PANEL - LOGIN FORM
+========================================= */
 
-      {{ password_field(
-        "login-password",
-        "Password",
-        placeholder="Your password"
-      ) }}
+.login-main {
+    flex: 1;
+    min-width: 0;
 
-      <button
-        class="btn btn-primary btn-block"
-        type="submit"
-      >
-        Log in
-      </button>
+    display: flex;
+    align-items: center;
+    justify-content: center;
 
-    </form>
+    padding: 2rem;
+    background: #f8fafc;
+}
 
-    <!-- Registration form -->
-    <form
-      id="panel-register"
-      role="tabpanel"
-      aria-labelledby="tab-register"
-      hidden
-      novalidate
-    >
+.login-card {
+    width: 100%;
+    max-width: 540px;
+}
 
-      {{ field(
-        "register-username",
-        "Username",
-        placeholder="3-30 letters, numbers, . _ -"
-      ) }}
+/* =========================================
+   RESPONSIVE DESIGN
+========================================= */
 
-      {{ password_field(
-        "register-password",
-        "Password",
-        placeholder="At least 8 characters",
-        autocomplete="new-password"
-      ) }}
+@media (max-width: 768px) {
 
-      <div class="field">
+    .login-page {
+        flex-direction: column;
+    }
 
-        <label for="register-role">Role</label>
+    .login-hero {
+        flex: none;
+        min-height: 280px;
+    }
 
-        <select id="register-role" name="role">
-          <option value="User">Lifeguard / staff</option>
-          <option value="Administrator">Administrator</option>
-        </select>
+    .login-hero-brand {
+        padding: 1.5rem;
+    }
 
-        <p class="field-hint">
-          An administrator must approve your account
-          before you can log in.
-        </p>
+    .login-hero-copy {
+        padding: 1.5rem;
+    }
 
-      </div>
+    .login-hero-copy h2 {
+        font-size: 1.5rem;
+    }
 
-      <button
-        class="btn btn-primary btn-block"
-        type="submit"
-      >
-        Request account
-      </button>
+    .login-hero-copy p {
+        font-size: 0.95rem;
+    }
 
-    </form>
+    .login-main {
+        padding: 2rem 1.25rem;
+    }
+}
 
-    <!-- Feedback -->
-    <div
-      id="message"
-      class="message"
-      hidden
-    ></div>
+/* =========================================
+   REDUCED MOTION ACCESSIBILITY
+========================================= */
 
-  </div>
+@media (prefers-reduced-motion: reduce) {
+    .login-bg-video {
+        display: none;
+    }
 
-</main>
+    .login-hero {
+        background: #063b59;
+    }
+}
 
-{% endblock %}
+/* =========================================
+   PASSWORD FIELD - ONE EYE BUTTON
+   (built by login.js; see setupPasswordToggles)
+========================================= */
 
-{% block scripts %}
-<script src="{{ asset('js/login.js') }}"></script>
-{% endblock %}
+.pw-wrap {
+    position: relative;
+    display: block;
+    width: 100%;
+}
 
+.pw-wrap > input.pw-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding-right: 2.9rem !important;   /* room for the eye */
+}
+
+.pw-toggle {
+    position: absolute;
+    top: 50%;
+    right: 0.45rem;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+    min-height: 0;
+    border-radius: 0.5rem;
+    background: transparent;
+    box-shadow: none;
+    color: #64748b;
+    font: inherit;
+    line-height: 0;
+    cursor: pointer;
+}
+
+.pw-toggle:hover {
+    color: #0f172a;
+    background: rgba(15, 23, 42, 0.06);
+}
+
+.pw-toggle:focus-visible {
+    outline: 2px solid #0e7490;
+    outline-offset: 2px;
+}
+
+.pw-toggle svg {
+    display: block;
+    width: 1.25rem;
+    height: 1.25rem;
+    pointer-events: none;
+}
+
+/* closed eye when password is hidden; open eye when password is visible */
+.pw-toggle .eye-open,
+.pw-toggle.is-visible .eye-off {
+    display: none;
+}
+
+.pw-toggle .eye-off,
+.pw-toggle.is-visible .eye-open {
+    display: block;
+}
+
+/* anything the template already drew next to the field */
+.pw-hidden-original {
+    display: none !important;
+}
+
+/* the browser's own show-password icon (Edge) would double the eye */
+.pw-wrap input::-ms-reveal,
+.pw-wrap input::-ms-clear {
+    display: none;
+}
+
+.pw-wrap input::-webkit-credentials-auto-fill-button {
+    visibility: hidden;
+    display: none !important;
+    pointer-events: none;
+}
