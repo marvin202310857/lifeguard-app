@@ -11,7 +11,6 @@
     {{ brand() }}
     <div class="userbar">
       <button type="button" id="sound-toggle" class="btn btn-ghost btn-sm" aria-pressed="false">Alarm sound off</button>
-      <span class="user-name">{{ user.username }}</span>
       <span class="chip {{ 'chip-admin' if is_admin else 'chip-offline' }}">{{ user.role }}</span>
       <form method="post" action="/logout"><button type="submit" class="btn btn-ghost btn-sm">Log out</button></form>
     </div>
