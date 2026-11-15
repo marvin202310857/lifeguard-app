@@ -1,4 +1,3 @@
-
 /* =========================================
    LIFEGUARD LOGIN PAGE
 ========================================= */
@@ -247,13 +246,14 @@
     pointer-events: none;
 }
 
-/* exactly one icon at a time */
-.pw-toggle .eye-off,
-.pw-toggle.is-visible .eye-open {
+/* closed eye when password is hidden; open eye when password is visible */
+.pw-toggle .eye-open,
+.pw-toggle.is-visible .eye-off {
     display: none;
 }
 
-.pw-toggle.is-visible .eye-off {
+.pw-toggle .eye-off,
+.pw-toggle.is-visible .eye-open {
     display: block;
 }
 
